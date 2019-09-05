@@ -556,8 +556,12 @@ def main():
                         type=str,
                         required=True,
                         help="The output directory where the model checkpoints will be written.")
-
+    
     ## Other parameters
+    parser.add_argument("--load_all",
+                        default=False,
+                        action='store_true',
+                        help="Whether to load all parameter or only for bert part.")
     parser.add_argument("--init_checkpoint",
                         default=None,
                         type=str,
@@ -735,7 +739,10 @@ def main():
     model = BertForMultiTask(bert_config, [len(labels) for labels in label_list])
 
     if args.init_checkpoint is not None:
-        if args.multi:
+        # load all parameter including the classification and model patch
+        if args.load_all:
+            model.load_state_dict(torch.load(args.init_checkpoint, map_location='cpu'))
+        elif args.multi:
             partial = torch.load(args.init_checkpoint, map_location='cpu')
             model_dict = model.bert.state_dict()
             update = {}
