@@ -1,10 +1,10 @@
 #!/bin/bash
 
 python train_nli.py --vocab_file uncased_L-12_H-768_A-12/vocab.txt \
-                --bert_config_file configs/bert_config.json \
+                --bert_config_file configs/pals_config.json \
                 --init_checkpoint uncased_L-12_H-768_A-12/pytorch_model.bin \
                 --output_dir saved_test_nli \
-                --tasks mnli,wnli,snli,scitail,rte,mrpc,qqp,qnli \
+                --tasks $1 \
                 --do_lower_case \
                 --do_train \
                 --do_eval \
@@ -14,6 +14,7 @@ python train_nli.py --vocab_file uncased_L-12_H-768_A-12/vocab.txt \
                 --data_dir ../match_dataset/ \
                 --sample prop \
                 --num_train_epochs 3 \
+                --multi
                 
 # mnli,wnli,snli,scitail
 # rte,mrpc,qqp,qnli

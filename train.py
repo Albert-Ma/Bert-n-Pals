@@ -33,10 +33,11 @@ from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
                               TensorDataset)
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
+from torch.utils.tensorboard import SummaryWriter
 
 from file_utils import PYTORCH_PRETRAINED_BERT_CACHE, WEIGHTS_NAME, CONFIG_NAME
 from modeling import BertForQuestionAnswering, BertConfig
-from optimization import BertAdam, WarmupLinearSchedule
+from optimization import BERTAdam
 from tokenization import (BasicTokenizer,
                                         FullTokenizer,
                                          whitespace_tokenize)
@@ -50,7 +51,7 @@ else:
 
 logger = logging.getLogger(__name__)
 
-
+tf_writer = SummaryWriter()
 class SquadExample(object):
     """
     A single training/test example for the Squad dataset.
@@ -771,7 +772,7 @@ def main():
     parser.add_argument("--init_checkpoint", default=None, type=str, required=True)
     parser.add_argument("--output_dir", default=None, type=str, required=True,
                         help="The output directory where the model checkpoints and predictions will be written.")
-
+    parser.add_argument("--patch", action='store_true', help="Whether to load patch part parameters.")
     ## Other parameters
     parser.add_argument("--train_file", default=None, type=str, help="SQuAD json for training. E.g., train-v1.1.json")
     parser.add_argument("--predict_file", default=None, type=str,
@@ -817,18 +818,18 @@ def main():
     parser.add_argument("--do_lower_case",
                         action='store_true',
                         help="Whether to lower case the input text. True for uncased models, False for cased models.")
-    parser.add_argument("--local_rank",
-                        type=int,
-                        default=-1,
-                        help="local_rank for distributed training on gpus")
-    parser.add_argument('--fp16',
-                        action='store_true',
-                        help="Whether to use 16-bit float precision instead of 32-bit")
-    parser.add_argument('--loss_scale',
-                        type=float, default=0,
-                        help="Loss scaling to improve fp16 numeric stability. Only used when fp16 set to True.\n"
-                             "0 (default value): dynamic loss scaling.\n"
-                             "Positive power of 2: static loss scaling value.\n")
+    # parser.add_argument("--local_rank",
+    #                     type=int,
+    #                     default=-1,
+    #                     help="local_rank for distributed training on gpus")
+    # parser.add_argument('--fp16',
+    #                     action='store_true',
+    #                     help="Whether to use 16-bit float precision instead of 32-bit")
+    # parser.add_argument('--loss_scale',
+    #                     type=float, default=0,
+    #                     help="Loss scaling to improve fp16 numeric stability. Only used when fp16 set to True.\n"
+    #                          "0 (default value): dynamic loss scaling.\n"
+    #                          "Positive power of 2: static loss scaling value.\n")
     parser.add_argument('--version_2_with_negative',
                         action='store_true',
                         help='If true, the SQuAD examples contain some that do not have an answer.')
@@ -852,7 +853,7 @@ def main():
 
     logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                         datefmt = '%m/%d/%Y %H:%M:%S',
-                        level = logging.INFO if args.local_rank in [-1, 0] else logging.WARN)
+                        level = logging.INFO)
 
     if args.gradient_accumulation_steps < 1:
         raise ValueError("Invalid gradient_accumulation_steps parameter: {}, should be >= 1".format(
@@ -883,7 +884,7 @@ def main():
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
 
-    tokenizer = FullTokenizer.from_pretrained(args.vocab_file, do_lower_case=args.do_lower_case)
+    tokenizer = FullTokenizer(args.vocab_file, do_lower_case=args.do_lower_case)
 
     train_examples = None
     num_train_optimization_steps = None
@@ -915,15 +916,15 @@ def main():
         {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
         ]
    
-    optimizer = BertAdam(optimizer_grouped_parameters,
+    optimizer = BERTAdam(optimizer_grouped_parameters,
                             lr=args.learning_rate,
                             warmup=args.warmup_proportion,
                             t_total=num_train_optimization_steps)
 
     global_step = 0
     if args.do_train:
-        cached_train_features_file = args.train_file+'_{0}_{1}_{2}_{3}'.format(
-            list(filter(None, args.bert_model.split('/'))).pop(), str(args.max_seq_length), str(args.doc_stride), str(args.max_query_length))
+        cached_train_features_file = args.train_file+'_{0}_{1}_{2}'.format(
+            str(args.max_seq_length), str(args.doc_stride), str(args.max_query_length))
         train_features = None
         try:
             with open(cached_train_features_file, "rb") as reader:
@@ -949,25 +950,31 @@ def main():
         all_input_ids = torch.tensor([f.input_ids for f in train_features], dtype=torch.long)
         all_input_mask = torch.tensor([f.input_mask for f in train_features], dtype=torch.long)
         all_segment_ids = torch.tensor([f.segment_ids for f in train_features], dtype=torch.long)
+        all_task_ids = torch.tensor([0 for f in train_features], dtype=torch.long)
         all_start_positions = torch.tensor([f.start_position for f in train_features], dtype=torch.long)
         all_end_positions = torch.tensor([f.end_position for f in train_features], dtype=torch.long)
-        train_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids,
+        train_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids,all_task_ids, 
                                    all_start_positions, all_end_positions)
         train_sampler = RandomSampler(train_data)
-        train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
+        train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size, drop_last=True)
 
         model.train()
-        for _ in trange(int(args.num_train_epochs), desc="Epoch"):
+        global_step = 0
+        for epoch in trange(int(args.num_train_epochs), desc="Epoch"):
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
                 if n_gpu == 1:
-                    batch = tuple(t.to(device) for t in batch) # multi-gpu does scattering it-self
-                input_ids, input_mask, segment_ids, start_positions, end_positions = batch
-                loss = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
+                    batch = tuple(t.to(device) for t in batch) # multi-gpu dopes scattering it-self
+                input_ids, input_mask, segment_ids, task_id, start_positions, end_positions = batch
+                loss = model(input_ids, segment_ids, input_mask, task_id=task_id[0],
+                                 start_positions=start_positions, end_positions=end_positions)
                 if n_gpu > 1:
                     loss = loss.mean() # mean() to average on multi-gpu.
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
-    
+                    
+                tf_writer.add_scalar('Loss/train', loss.item(), global_step)
+                tf_writer.add_scalar('LR/train', loss.item(), optimizer.get_lr())
+                global_step += 1
                 loss.backward()
                 if (step + 1) % args.gradient_accumulation_steps == 0:
                     optimizer.step()
@@ -979,16 +986,16 @@ def main():
     if args.do_train:
         # Save a trained model, configuration and tokenizer
         model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
-
         # If we save using the predefined names, we can load using `from_pretrained`
         torch.save(model_to_save.state_dict(), output_model_file)
-        model_to_save.config.to_json_file(output_config_file)
+        config.to_json_file(output_config_file)
 
 
     # Load a trained model and vocabulary that you have fine-tuned
     config = BertConfig.from_json_file(output_config_file)
     model = BertForQuestionAnswering(config)
-    model.load_pretained(output_model_file, patch=args.patch)
+    # 加载全部参数
+    model.load_state_dict(torch.load(output_model_file))
     
     model.to(device)
 
@@ -1011,8 +1018,10 @@ def main():
         all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
         all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
         all_segment_ids = torch.tensor([f.segment_ids for f in eval_features], dtype=torch.long)
+        all_task_ids = torch.tensor([0 for f in eval_features], dtype=torch.long)
+
         all_example_index = torch.arange(all_input_ids.size(0), dtype=torch.long)
-        eval_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_example_index)
+        eval_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_task_ids, all_example_index)
         # Run prediction for full data
         eval_sampler = SequentialSampler(eval_data)
         eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.predict_batch_size)
@@ -1020,14 +1029,14 @@ def main():
         model.eval()
         all_results = []
         logger.info("Start evaluating")
-        for input_ids, input_mask, segment_ids, example_indices in tqdm(eval_dataloader, desc="Evaluating", disable=args.local_rank not in [-1, 0]):
+        for input_ids, input_mask, segment_ids, task_ids, example_indices in tqdm(eval_dataloader, desc="Evaluating"):
             if len(all_results) % 1000 == 0:
                 logger.info("Processing example: %d" % (len(all_results)))
             input_ids = input_ids.to(device)
             input_mask = input_mask.to(device)
             segment_ids = segment_ids.to(device)
             with torch.no_grad():
-                batch_start_logits, batch_end_logits = model(input_ids, segment_ids, input_mask)
+                batch_start_logits, batch_end_logits = model(input_ids, segment_ids, input_mask, task_id=task_ids[0])
             for i, example_index in enumerate(example_indices):
                 start_logits = batch_start_logits[i].detach().cpu().tolist()
                 end_logits = batch_end_logits[i].detach().cpu().tolist()

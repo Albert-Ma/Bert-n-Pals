@@ -122,6 +122,11 @@ class BertConfig(object):
             text = reader.read()
         return cls.from_dict(json.loads(text))
 
+    def to_json_file(self, json_file_path):
+        """ Save this instance to a json file."""
+        with open(json_file_path, "w", encoding='utf-8') as writer:
+            writer.write(self.to_json_string())
+
     def to_dict(self):
         """Serializes this instance to a Python dictionary."""
         output = copy.deepcopy(self.__dict__)
@@ -606,34 +611,18 @@ class BertForMultiTask(nn.Module):
         else:
             return logits
 
-
-class BertForSequenceClassification(nn.Module):
-    """BERT model for classification.
+class BertForMultiNLI(nn.Module):
+    """BERT model for classification over sentence pair.
     This module is composed of the BERT model with a linear layer on top of
     the pooled output.
-
-    Example usage:
-    ```python
-    # Already been converted into WordPiece token ids
-    input_ids = torch.LongTensor([[31, 51, 99], [15, 5, 0]])
-    input_mask = torch.LongTensor([[1, 1, 1], [1, 1, 0]])
-    token_type_ids = torch.LongTensor([[0, 0, 1], [0, 2, 0]])
-
-    config = BertConfig(vocab_size=32000, hidden_size=512,
-        num_hidden_layers=8, num_attention_heads=6, intermediate_size=1024)
-
-    num_labels = 2
-
-    model = BertForSequenceClassification(config, num_labels)
-    logits = model(input_ids, token_type_ids, input_mask)
     ```
     """
-    def __init__(self, config, num_labels):
-        super(BertForSequenceClassification, self).__init__()
+    def __init__(self, config, task_num_labels):
+        super(BertForMultiNLI, self).__init__()
         self.bert = BertModel(config)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.classifier = nn.Linear(config.hidden_size, num_labels)
-
+        self.classifier = nn.ModuleList([nn.Linear(config.hidden_size, num_labels) 
+                                         for i, num_labels in enumerate(task_num_labels)])
         def init_weights(module):
             if isinstance(module, (nn.Linear, nn.Embedding)):
                 # Slightly different from the TF version which uses truncated_normal for initialization
@@ -647,10 +636,10 @@ class BertForSequenceClassification(nn.Module):
                     module.bias.data.zero_()
         self.apply(init_weights)
 
-    def forward(self, input_ids, token_type_ids, attention_mask, labels=None):
-        _, pooled_output = self.bert(input_ids, token_type_ids, attention_mask)
+    def forward(self, input_ids, token_type_ids, attention_mask, task_id, labels=None):
+        _, pooled_output = self.bert(input_ids, token_type_ids, attention_mask, task_id)
         pooled_output = self.dropout(pooled_output)
-        logits = self.classifier(pooled_output)
+        logits = self.classifier[task_id](pooled_output)
 
         if labels is not None:
             loss_fct = CrossEntropyLoss()
@@ -697,8 +686,8 @@ class BertForQuestionAnswering(nn.Module):
                 module.bias.data.zero_()
         self.apply(init_weights)
 
-    def forward(self, input_ids, token_type_ids, attention_mask, start_positions=None, end_positions=None):
-        all_encoder_layers, _ = self.bert(input_ids, token_type_ids, attention_mask)
+    def forward(self, input_ids, token_type_ids, attention_mask, task_id=None, start_positions=None, end_positions=None):
+        all_encoder_layers, _ = self.berppt(input_ids, token_type_ids, attention_mask, task_id)
         sequence_output = all_encoder_layers[-1]
         logits = self.qa_outputs(sequence_output)
         start_logits, end_logits = logits.split(1, dim=-1)
@@ -721,78 +710,21 @@ class BertForQuestionAnswering(nn.Module):
             return total_loss
         else:
             return start_logits, end_logits
-
-
-class BertForMultipleChoice(nn.Module):
-    """BERT model for multiple choice tasks.
-    This module is composed of the BERT model with a linear layer on top of
-    the pooled output.
-    Params:
-        `config`: a BertConfig class instance with the configuration to build a new model.
-        `num_choices`: the number of classes for the classifier. Default = 2.
-    Inputs:
-        `input_ids`: a torch.LongTensor of shape [batch_size, num_choices, sequence_length]
-            with the word token indices in the vocabulary(see the tokens preprocessing logic in the scripts
-            `extract_features.py`, `run_classifier.py` and `run_squad.py`)
-        `token_type_ids`: an optional torch.LongTensor of shape [batch_size, num_choices, sequence_length]
-            with the token types indices selected in [0, 1]. Type 0 corresponds to a `sentence A`
-            and type 1 corresponds to a `sentence B` token (see BERT paper for more details).
-        `attention_mask`: an optional torch.LongTensor of shape [batch_size, num_choices, sequence_length] with indices
-            selected in [0, 1]. It's a mask to be used if the input sequence length is smaller than the max
-            input sequence length in the current batch. It's the mask that we typically use for attention when
-            a batch has varying length sentences.
-        `labels`: labels for the classification output: torch.LongTensor of shape [batch_size]
-            with indices selected in [0, ..., num_choices].
-    Outputs:
-        if `labels` is not `None`:
-            Outputs the CrossEntropy classification loss of the output with the labels.
-        if `labels` is `None`:
-            Outputs the classification logits of shape [batch_size, num_labels].
-    Example usage:
-    ```python
-    # Already been converted into WordPiece token ids
-    input_ids = torch.LongTensor([[[31, 51, 99], [15, 5, 0]], [[12, 16, 42], [14, 28, 57]]])
-    input_mask = torch.LongTensor([[[1, 1, 1], [1, 1, 0]],[[1,1,0], [1, 0, 0]]])
-    token_type_ids = torch.LongTensor([[[0, 0, 1], [0, 1, 0]],[[0, 1, 1], [0, 0, 1]]])
-    config = BertConfig(vocab_size_or_config_json_file=32000, hidden_size=768,
-        num_hidden_layers=12, num_attention_heads=12, intermediate_size=3072)
-    num_choices = 2
-    model = BertForMultipleChoice(config, num_choices)
-    logits = model(input_ids, token_type_ids, input_mask)
-    ```
-    """
-    def __init__(self, config, num_choices=2):
-        super(BertForMultipleChoice, self).__init__()
-        self.num_choices = num_choices
-        self.bert = BertModel(config)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.classifier = nn.Linear(config.hidden_size, 1)
-
-        def init_weights(module):
-            if isinstance(module, (nn.Linear, nn.Embedding)):
-                # Slightly different from the TF version which uses truncated_normal for initialization
-                # cf https://github.com/pytorch/pytorch/pull/5617
-                module.weight.data.normal_(mean=0.0, std=config.initializer_range)
-            elif isinstance(module, BERTLayerNorm):
-                module.beta.data.normal_(mean=0.0, std=config.initializer_range)
-                module.gamma.data.normal_(mean=0.0, std=config.initializer_range)
-            if isinstance(module, nn.Linear):
-                module.bias.data.zero_()
-        self.apply(init_weights)
-
-    def forward(self, input_ids, token_type_ids=None, attention_mask=None, labels=None):
-        flat_input_ids = input_ids.view(-1, input_ids.size(-1))
-        flat_token_type_ids = token_type_ids.view(-1, token_type_ids.size(-1))
-        flat_attention_mask = attention_mask.view(-1, attention_mask.size(-1))
-        _, pooled_output = self.bert(flat_input_ids, flat_token_type_ids, flat_attention_mask)
-        pooled_output = self.dropout(pooled_output)
-        logits = self.classifier(pooled_output)
-        reshaped_logits = logits.view(-1, self.num_choices)
-
-        if labels is not None:
-            loss_fct = CrossEntropyLoss()
-            loss = loss_fct(reshaped_logits, labels)
-            return loss
+    
+    def load_pretained(self, init_checkpoint, patch=False):
+        if patch:
+            partial = torch.load(init_checkpoint, map_location='cpu')
+            model_dict = self.bert.state_dict()
+            update = {}
+            for n, p in model_dict.items():
+                if 'aug' in n or 'mult' in n:
+                    update[n] = p
+                    if 'pooler.mult' in n and 'bias' in n:
+                        update[n] = partial['pooler.dense.bias']
+                    if 'pooler.mult' in n and 'weight' in n:
+                        update[n] = partial['pooler.dense.weight']
+                else:
+                    update[n] = partial[n]
+            self.bert.load_state_dict(update)
         else:
-            return reshaped_logits
-
+            self.bert.load_state_dict(torch.load(init_checkpoint, map_location='cpu'))

@@ -40,13 +40,13 @@ from modeling import BertConfig, BertForMultiNLI
 from optimization import BERTAdam
 
 
-
-logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s', 
-                    datefmt = '%m/%d/%Y %H:%M:%S',
-                    level = logging.INFO)
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
+                    datefmt='%m/%d/%Y %H:%M:%S',
+                    level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 tf_writer = SummaryWriter('nli_runs')
+
 
 class InputExample(object):
     """A single training/test example for simple sequence classification."""
@@ -170,14 +170,15 @@ class MnliProcessor(DataProcessor):
         for (i, line) in enumerate(lines):
             if i == 0:
                 continue
-            guid = "%s-%s" % (set_type, tokenization.convert_to_unicode(line[0]))
+            guid = "%s-%s" % (set_type,
+                              tokenization.convert_to_unicode(line[0]))
             text_a = tokenization.convert_to_unicode(line[8])
             text_b = tokenization.convert_to_unicode(line[9])
             label = tokenization.convert_to_unicode(line[-1])
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
         return examples
- 
+
 
 class SNLIProcessor(DataProcessor):
     """Processor for the SNLI dataset."""
@@ -202,7 +203,8 @@ class SNLIProcessor(DataProcessor):
         examples = []
         err_cnt = 0
         for (i, line) in enumerate(lines):
-            guid = "%s-%s" % (set_type, tokenization.convert_to_unicode(line['pairID']))
+            guid = "%s-%s" % (set_type,
+                              tokenization.convert_to_unicode(line['pairID']))
             text_a = tokenization.convert_to_unicode(line['sentence1'])
             text_b = tokenization.convert_to_unicode(line['sentence2'])
             label = tokenization.convert_to_unicode(line['gold_label'])
@@ -213,7 +215,7 @@ class SNLIProcessor(DataProcessor):
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
         print('SNLI dataset has {} error!'.format(err_cnt))
         return examples
- 
+
 
 class ScitailProcessor(DataProcessor):
     """Processor for the Scitail dataset."""
@@ -237,7 +239,8 @@ class ScitailProcessor(DataProcessor):
         """Creates examples for the training and dev sets."""
         examples = []
         for (i, line) in enumerate(lines):
-            guid = "%s-%s" % (set_type, hash(line['sentence1']+line['sentence2']))
+            guid = "%s-%s" % (set_type,
+                              hash(line['sentence1']+line['sentence2']))
             text_a = tokenization.convert_to_unicode(line['sentence1'])
             text_b = tokenization.convert_to_unicode(line['sentence2'])
             label = tokenization.convert_to_unicode(line['gold_label'])
@@ -270,14 +273,15 @@ class WnliProcessor(DataProcessor):
         for (i, line) in enumerate(lines):
             if i == 0:
                 continue
-            guid = "%s-%s" % (set_type, tokenization.convert_to_unicode(line[0]))
+            guid = "%s-%s" % (set_type,
+                              tokenization.convert_to_unicode(line[0]))
             text_a = tokenization.convert_to_unicode(line[1])
             text_b = tokenization.convert_to_unicode(line[2])
             label = tokenization.convert_to_unicode(line[-1])
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
         return examples
- 
+
 
 class STSProcessor(DataProcessor):
     """Processor for the STS-B data set (GLUE version)."""
@@ -501,11 +505,11 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
         #     logger.info("label: %s (id = %d)" % (example.label, label_id))
 
         features.append(
-                InputFeatures(
-                        input_ids=input_ids,
-                        input_mask=input_mask,
-                        segment_ids=segment_ids,
-                        label_id=label_id))
+            InputFeatures(
+                input_ids=input_ids,
+                input_mask=input_mask,
+                segment_ids=segment_ids,
+                label_id=label_id))
     return features
 
 
@@ -525,13 +529,14 @@ def _truncate_seq_pair(tokens_a, tokens_b, max_length):
         else:
             tokens_b.pop()
 
+
 def accuracy(out, labels):
     outputs = np.argmax(out, axis=1)
-    return np.sum(outputs==labels)
+    return np.sum(outputs == labels)
 
 
-def do_eval(model, logger, args, device, tr_loss, nb_tr_steps, global_step, processor, 
-            label_list, tokenizer, eval_dataloader, task_model_index, task_names):
+def do_eval(model, logger, args, device, tr_loss, nb_tr_steps, global_step, processor,
+            label_list, tokenizer, eval_dataloader, task_model_index, task_names, task_name, output_dir):
 
     model.eval()
     eval_loss, eval_accuracy = 0, 0
@@ -542,15 +547,15 @@ def do_eval(model, logger, args, device, tr_loss, nb_tr_steps, global_step, proc
         segment_ids = segment_ids.to(device)
         label_ids = label_ids.to(device)
         with torch.no_grad():
-            tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, task_model_index, label_ids)
+            tmp_eval_loss, logits = model(
+                input_ids, segment_ids, input_mask, task_model_index, label_ids)
 
-       
         logits = logits.detach().cpu().numpy()
         label_ids = label_ids.to('cpu').numpy()
         tmp_eval_accuracy = accuracy(logits, label_ids)
 
         eval_loss += tmp_eval_loss.mean().item()
-     
+
         eval_accuracy += tmp_eval_accuracy
 
         nb_eval_examples += input_ids.size(0)
@@ -562,11 +567,13 @@ def do_eval(model, logger, args, device, tr_loss, nb_tr_steps, global_step, proc
     result = {'eval_loss': eval_loss,
               'eval_accuracy': eval_accuracy,
               'global_step': global_step,
+              'train_step': nb_tr_steps,
               'loss': tr_loss/nb_tr_steps}
 
-    output_eval_file = os.path.join(args.output_dir, '_'.join(task_names), "eval_results.txt")
+    output_eval_file = os.path.join(
+        output_dir, "{}_eval_results.txt".format(task_name))
     with open(output_eval_file, "w") as writer:
-        logger.info("***** Eval results *****")
+        logger.info("***** {} Eval results *****".format(task_name))
         for key in sorted(result.keys()):
             logger.info("  %s = %s", key, str(result[key]))
             writer.write("%s = %s\n" % (key, str(result[key])))
@@ -576,7 +583,7 @@ def do_eval(model, logger, args, device, tr_loss, nb_tr_steps, global_step, proc
 def main():
     parser = argparse.ArgumentParser()
 
-    ## Required parameters
+    # Required parameters
     parser.add_argument("--data_dir",
                         default=None,
                         type=str,
@@ -599,7 +606,11 @@ def main():
                         required=True,
                         help="The output directory where the model checkpoints will be written.")
 
-    ## Other parameters
+    # Other parameters
+    parser.add_argument("--load_all",
+                        default=False,
+                        action='store_true',
+                        help="Whether to load all parameter or only for bert part.")
     parser.add_argument("--init_checkpoint",
                         default=None,
                         type=str,
@@ -676,14 +687,14 @@ def main():
                         type=int,
                         default=-1,
                         help="local_rank for distributed training on gpus")
-    parser.add_argument('--seed', 
-                        type=int, 
+    parser.add_argument('--seed',
+                        type=int,
                         default=42,
                         help="random seed for initialization")
     parser.add_argument('--gradient_accumulation_steps',
                         type=int,
                         default=1,
-                        help="Number of updates steps to accumualte before performing a backward/update pass.")                       
+                        help="Number of updates steps to accumualte before performing a backward/update pass.")
     args = parser.parse_args()
 
     processors = {
@@ -709,14 +720,16 @@ def main():
         'wnli': 8
     }
     task_num_labels = [3, 2, 2, 2, 2, 2, 3, 3, 2]
-    device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available()
+                          and not args.no_cuda else "cpu")
     n_gpu = torch.cuda.device_count()
 
     if args.gradient_accumulation_steps < 1:
         raise ValueError("Invalid accumulate_gradients parameter: {}, should be >= 1".format(
-                            args.gradient_accumulation_steps))
+            args.gradient_accumulation_steps))
 
-    args.train_batch_size = int(args.train_batch_size / args.gradient_accumulation_steps)
+    args.train_batch_size = int(
+        args.train_batch_size / args.gradient_accumulation_steps)
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -725,21 +738,23 @@ def main():
         torch.cuda.manual_seed_all(args.seed)
 
     if not args.do_train and not args.do_eval:
-        raise ValueError("At least one of `do_train` or `do_eval` must be True.")
+        raise ValueError(
+            "At least one of `do_train` or `do_eval` must be True.")
 
     bert_config = BertConfig.from_json_file(args.bert_config_file)
 
     if args.max_seq_length > bert_config.max_position_embeddings:
         raise ValueError(
             "Cannot use sequence length {} because the BERT model was only trained up to sequence length {}".format(
-            args.max_seq_length, bert_config.max_position_embeddings))
+                args.max_seq_length, bert_config.max_position_embeddings))
 
     os.makedirs(args.output_dir, exist_ok=True)
 
     task_names = args.tasks.split(',')
-    
-    os.makedirs(os.path.join(args.output_dir, '_'.join(task_names)), exist_ok=True)
 
+    output_dir = os.path.join(args.output_dir,
+                              '_'.join(task_names) + '_' + os.path.basename(args.bert_config_file).replace('.json', ''))
+    os.makedirs(output_dir, exist_ok=True)
     processor_list = [processors[task_name]() for task_name in task_names]
     label_list = [processor.get_labels() for processor in processor_list]
 
@@ -750,21 +765,24 @@ def main():
     num_train_steps = None
     num_tasks = len(task_names)
     if args.do_train:
-        train_examples = [processor.get_train_examples(args.data_dir + data_dir) for processor, data_dir in zip(processor_list, task_names)]
+        train_examples = [processor.get_train_examples(
+            args.data_dir + data_dir) for processor, data_dir in zip(processor_list, task_names)]
         num_train_examples = [len(tr) for tr in train_examples]
         total_train_examples = sum(num_train_examples)
         num_train_steps = int(
             total_train_examples / args.train_batch_size * args.num_train_epochs)
         total_tr = num_train_steps
         # 每个epoch只过一半的数据，防止边界case
-        steps_per_epoch = int(num_train_steps / args.num_train_epochs )
+        steps_per_epoch = int(num_train_steps / args.num_train_epochs)
 
     if args.h_aug is not 'n/a':
         bert_config.hidden_size_aug = int(args.h_aug)
     model = BertForMultiNLI(bert_config, task_num_labels)
 
     if args.init_checkpoint is not None:
-        if args.multi:
+        if args.load_all:
+            model.load_state_dict(torch.load(args.init_checkpoint, map_location='cpu'))
+        elif args.multi:
             partial = torch.load(args.init_checkpoint, map_location='cpu')
             model_dict = model.bert.state_dict()
             update = {}
@@ -779,7 +797,8 @@ def main():
                     update[n] = partial[n]
             model.bert.load_state_dict(update)
         else:
-            model.bert.load_state_dict(torch.load(args.init_checkpoint, map_location='cpu'))
+            model.bert.load_state_dict(torch.load(
+                args.init_checkpoint, map_location='cpu'))
 
     if args.freeze:
         for n, p in model.bert.named_parameters():
@@ -794,9 +813,11 @@ def main():
     if args.optim == 'normal':
         no_decay = ['bias', 'gamma', 'beta']
         optimizer_parameters = [
-                {'params': [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)], 'weight_decay_rate': 0.01},
-                {'params': [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay_rate': 0.0}
-                ]
+            {'params': [p for n, p in model.named_parameters() if not any(
+                nd in n for nd in no_decay)], 'weight_decay_rate': 0.01},
+            {'params': [p for n, p in model.named_parameters() if any(
+                nd in n for nd in no_decay)], 'weight_decay_rate': 0.0}
+        ]
         optimizer = BERTAdam(optimizer_parameters,
                              lr=args.learning_rate,
                              warmup=args.warmup_proportion,
@@ -805,35 +826,46 @@ def main():
         no_decay = ['bias', 'gamma', 'beta']
         base = ['attn']
         optimizer_parameters = [
-                {'params': [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay) and not any(nd in n for nd in base)], 'weight_decay_rate': 0.01},
-                {'params': [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay) and not any(nd in n for nd in base)], 'weight_decay_rate': 0.0}
-                ]
+            {'params': [p for n, p in model.named_parameters() if not any(
+                nd in n for nd in no_decay) and not any(nd in n for nd in base)], 'weight_decay_rate': 0.01},
+            {'params': [p for n, p in model.named_parameters() if any(
+                nd in n for nd in no_decay) and not any(nd in n for nd in base)], 'weight_decay_rate': 0.0}
+        ]
         optimizer = BERTAdam(optimizer_parameters,
                              lr=args.learning_rate,
                              warmup=args.warmup_proportion,
                              t_total=total_tr)
         optimizer_parameters_mult = [
-                {'params': [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay) and any(nd in n for nd in base)], 'weight_decay_rate': 0.01},
-                {'params': [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay) and any(nd in n for nd in base)], 'weight_decay_rate': 0.0}
-                ]
+            {'params': [p for n, p in model.named_parameters() if not any(
+                nd in n for nd in no_decay) and any(nd in n for nd in base)], 'weight_decay_rate': 0.01},
+            {'params': [p for n, p in model.named_parameters() if any(
+                nd in n for nd in no_decay) and any(nd in n for nd in base)], 'weight_decay_rate': 0.0}
+        ]
         optimizer_mult = BERTAdam(optimizer_parameters_mult,
-                             lr=3e-4,
-                             warmup=args.warmup_proportion,
-                             t_total=total_tr)
+                                  lr=3e-4,
+                                  warmup=args.warmup_proportion,
+                                  t_total=total_tr)
     if args.do_eval:
         eval_loaders = []
         for i, task in enumerate(task_names):
-            eval_examples = processor_list[i].get_dev_examples(args.data_dir + task_names[i])
+            eval_examples = processor_list[i].get_dev_examples(
+                args.data_dir + task_names[i])
             eval_features = convert_examples_to_features(
                 eval_examples, label_list[i], args.max_seq_length, tokenizer, task)
-            all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
-            all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
-            all_segment_ids = torch.tensor([f.segment_ids for f in eval_features], dtype=torch.long)
-            all_label_ids = torch.tensor([f.label_id for f in eval_features], dtype=torch.long)
-    
-            eval_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
+            all_input_ids = torch.tensor(
+                [f.input_ids for f in eval_features], dtype=torch.long)
+            all_input_mask = torch.tensor(
+                [f.input_mask for f in eval_features], dtype=torch.long)
+            all_segment_ids = torch.tensor(
+                [f.segment_ids for f in eval_features], dtype=torch.long)
+            all_label_ids = torch.tensor(
+                [f.label_id for f in eval_features], dtype=torch.long)
+
+            eval_data = TensorDataset(
+                all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
             eval_sampler = SequentialSampler(eval_data)
-            eval_loaders.append(DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size))
+            eval_loaders.append(DataLoader(
+                eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size))
 
     global_step = 0
     if args.do_train:
@@ -845,14 +877,20 @@ def main():
             logger.info("***** training data for %s *****", task)
             logger.info("  Data size = %d", len(train_features))
 
-            all_input_ids = torch.tensor([f.input_ids for f in train_features], dtype=torch.long)
-            all_input_mask = torch.tensor([f.input_mask for f in train_features], dtype=torch.long)
-            all_segment_ids = torch.tensor([f.segment_ids for f in train_features], dtype=torch.long)
-            all_label_ids = torch.tensor([f.label_id for f in train_features], dtype=torch.long)
+            all_input_ids = torch.tensor(
+                [f.input_ids for f in train_features], dtype=torch.long)
+            all_input_mask = torch.tensor(
+                [f.input_mask for f in train_features], dtype=torch.long)
+            all_segment_ids = torch.tensor(
+                [f.segment_ids for f in train_features], dtype=torch.long)
+            all_label_ids = torch.tensor(
+                [f.label_id for f in train_features], dtype=torch.long)
 
-            train_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
+            train_data = TensorDataset(
+                all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
             train_sampler = RandomSampler(train_data)
-            loaders.append(iter(DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)))
+            loaders.append(iter(DataLoader(
+                train_data, sampler=train_sampler, batch_size=args.train_batch_size)))
         total_params = sum(p.numel() for p in model.parameters())
         logger.info("  Num param = {}".format(total_params))
         loaders = [cycle(it) for it in loaders]
@@ -879,26 +917,27 @@ def main():
             tr_loss = [0. for i in range(num_tasks)]
             nb_tr_steps = [0 for i in range(num_tasks)]
             nb_tr_instances = [0 for i in range(num_tasks)]
-            for step in range(steps_per_epoch):
+            for step in tqdm(range(steps_per_epoch)):
                 task_index = np.random.choice(len(task_names), p=probs)
-                task_model_index = task_id_mappings[task_names[task_index]] 
+                task_model_index = task_id_mappings[task_names[task_index]]
                 batch = next(loaders[task_index])
                 batch = tuple(t.to(device) for t in batch)
                 input_ids, input_mask, segment_ids, label_ids = batch
-                loss, _ = model(input_ids, segment_ids, input_mask, task_model_index, label_ids)
+                loss, _ = model(input_ids, segment_ids,
+                                input_mask, task_model_index, label_ids)
                 if n_gpu > 1:
-                    loss = loss.mean() # mean() to average on multi-gpu.
+                    loss = loss.mean()  # mean() to average on multi-gpu.
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
                 loss.backward()
                 tr_loss[task_index] += loss.item() * input_ids.size(0)
                 nb_tr_instances[task_index] += input_ids.size(0)
                 nb_tr_steps[task_index] += 1
-                if step % 1000 < num_tasks:
-                    logger.info("Task: {}, Step: {}".format(task_names[task_index], step))
-                    logger.info("Loss: {}".format(tr_loss[task_index]/nb_tr_instances[task_index]))
-                tf_writer.add_scalar('loss/{}'.format(task_names[task_index]), 
-                            tr_loss[task_index]/nb_tr_instances[task_index], nb_tr_steps[task_index])
+                # if step % 1000 < num_tasks:
+                #     logger.info("Task: {}, Step: {}".format(task_names[task_index], step))
+                #     logger.info("Loss: {}".format(tr_loss[task_index]/nb_tr_instances[task_index]))
+                tf_writer.add_scalar('loss/{}'.format(task_names[task_index]),
+                                     tr_loss[task_index]/nb_tr_instances[task_index], nb_tr_steps[task_index])
                 if (step + 1) % args.gradient_accumulation_steps == 0:
                     optimizer.step()    # We have accumulated enought gradients
                     if args.optim != 'normal':
@@ -908,21 +947,19 @@ def main():
             epoch += 1
             ev_acc = 0.
             for i, task in enumerate(task_names):
-                ev_acc += do_eval(model, logger, args, device, tr_loss[i], nb_tr_steps, global_step, processor_list[i], 
-                                  label_list[i], tokenizer, eval_loaders[i], task_id_mappings[task], task_names)
+                ev_acc += do_eval(model, logger, args, device, tr_loss[i], nb_tr_steps[i], global_step, processor_list[i],
+                                  label_list[i], tokenizer, eval_loaders[i], task_id_mappings[task], task_names, task, output_dir)
             logger.info("Total acc: {}".format(ev_acc))
             if ev_acc > best_score:
                 best_score = ev_acc
-                model_dir = os.path.join(args.output_dir, 
-                '_'.join(task_names) + '_' + os.path.basename(args.bert_config_file).replace('.json',''),
-                 "best_model.pth")
+                model_dir = os.path.join(output_dir, "best_model.pth")
                 torch.save(model.state_dict(), model_dir)
             logger.info("Best Total acc: {}".format(best_score))
 
         ev_acc = 0.
         for i, task in enumerate(task_names):
-            ev_acc += do_eval(model, logger, args, device, tr_loss[i], nb_tr_steps, global_step, processor_list[i], 
-                              label_list[i], tokenizer, eval_loaders[i], task_id_mappings[task], task_names)
+            ev_acc += do_eval(model, logger, args, device, tr_loss[i], nb_tr_steps[i], global_step, processor_list[i],
+                              label_list[i], tokenizer, eval_loaders[i], task_id_mappings[task], task_names, task, output_dir)
         logger.info("Total acc: {}".format(ev_acc))
 
 
