@@ -114,6 +114,68 @@ class DataProcessor(object):
             return lines
 
 
+class MsMarcoProcessor(DataProcessor):
+    """Processor for the MsMarco data set."""
+
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "train12w_sample.tsv")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "dev10k_sample.tsv")), "dev")
+
+    def get_labels(self):
+        """See base class."""
+        return ["0", "1"]
+
+    def _create_examples(self, lines, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in enumerate(lines):
+            guid = "%s-%s" % (set_type, i)
+            text_a = tokenization.convert_to_unicode(line[0])
+            text_b = tokenization.convert_to_unicode(line[1])
+            label = tokenization.convert_to_unicode(line[2])
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+        return examples
+
+
+class WikiqaProcessor(DataProcessor):
+    """Processor for the Wikiqa data set."""
+
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "WikiQA-train.tsv")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "WikiQA-dev.tsv")), "dev")
+
+    def get_labels(self):
+        """See base class."""
+        return ["0", "1"]
+
+    def _create_examples(self, lines, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in enumerate(lines):
+            if i == 0:
+                continue
+            guid = "%s-%s" % (set_type, i)
+            text_a = tokenization.convert_to_unicode(line[1])
+            text_b = tokenization.convert_to_unicode(line[5])
+            label = tokenization.convert_to_unicode(line[-1])
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+        return examples
+
+
 class MrpcProcessor(DataProcessor):
     """Processor for the MRPC data set (GLUE version)."""
 
@@ -413,7 +475,7 @@ class RTEProcessor(DataProcessor):
 
 def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer, task='none'):
     """Loads a data file into a list of `InputBatch`s."""
-    logger.info("Conver example to feature for {}".format(task))
+    logger.info("Convert example to feature for {}".format(task))
     label_map = {}
     for (i, label) in enumerate(label_list):
         label_map[label] = i
@@ -492,17 +554,17 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
         except:
             print(label_map)
             print(task)
-        # if ex_index < 2:
-        #     logger.info("*** Example ***")
-        #     logger.info("guid: %s" % (example.guid))
-        #     logger.info("tokens: %s" % " ".join(
-        #             [tokenization.printable_text(x) for x in tokens]))
-        #     logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
-        #     logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
-        #     logger.info(
-        #             "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
-        #     #if task != 'sts':
-        #     logger.info("label: %s (id = %d)" % (example.label, label_id))
+        if ex_index < 2:
+            logger.info("*** Example ***")
+            logger.info("guid: %s" % (example.guid))
+            logger.info("tokens: %s" % " ".join(
+                    [tokenization.printable_text(x) for x in tokens]))
+            logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
+            logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
+            logger.info(
+                    "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+            #if task != 'sts':
+            logger.info("label: %s (id = %d)" % (example.label, label_id))
 
         features.append(
             InputFeatures(
@@ -706,7 +768,9 @@ def main():
         "qnli": QNLIProcessor,
         "snli": SNLIProcessor,
         "scitail": ScitailProcessor,
-        "wnli": WnliProcessor
+        "wnli": WnliProcessor,
+        "msmarco": MsMarcoProcessor,
+        "wikiqa": WikiqaProcessor
     }
     task_id_mappings = {
         'mnli': 0,
@@ -717,9 +781,11 @@ def main():
         'qnli': 5,
         'snli': 6,
         'scitail': 7,
-        'wnli': 8
+        'wnli': 8,
+        "msmarco": 9,
+        "wikiqa": 10
     }
-    task_num_labels = [3, 2, 2, 2, 2, 2, 3, 3, 2]
+    task_num_labels = [3, 2, 2, 2, 2, 2, 3, 3, 2, 2, 2]
     device = torch.device("cuda" if torch.cuda.is_available()
                           and not args.no_cuda else "cpu")
     n_gpu = torch.cuda.device_count()
