@@ -852,7 +852,9 @@ def main():
 
     if args.init_checkpoint is not None:
         if args.load_all:
-            model.load_state_dict(torch.load(args.init_checkpoint, map_location='cpu'))
+            missing_keys, unexpected_keys = model.load_state_dict(torch.load(args.init_checkpoint, map_location='cpu'),strict=False)
+            logger.info('missing keys: {}'.format(missing_keys))
+            logger.info('unexpected keys: {}'.format(unexpected_keys))
         elif args.multi:
             partial = torch.load(args.init_checkpoint, map_location='cpu')
             model_dict = model.bert.state_dict()
@@ -977,6 +979,9 @@ def main():
             tot = sum(probs)
             probs = [p/tot for p in probs]
         epoch = 0
+        tr_loss = [0. for i in range(num_tasks)]
+        nb_tr_steps = [0 for i in range(num_tasks)]
+        nb_tr_instances = [0 for i in range(num_tasks)]
         for _ in trange(int(args.num_train_epochs), desc="Epoch"):
             if args.sample == 'anneal':
                 probs = num_train_examples
@@ -985,9 +990,6 @@ def main():
                 tot = sum(probs)
                 probs = [p/tot for p in probs]
 
-            tr_loss = [0. for i in range(num_tasks)]
-            nb_tr_steps = [0 for i in range(num_tasks)]
-            nb_tr_instances = [0 for i in range(num_tasks)]
             for step in tqdm(range(steps_per_epoch)):
                 task_index = np.random.choice(len(task_names), p=probs)
                 task_model_index = task_id_mappings[task_names[task_index]]
