@@ -26,7 +26,8 @@ import argparse
 import random
 import json
 from tqdm import tqdm, trange
-
+import uuid
+import json
 import numpy as np
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import matthews_corrcoef
@@ -45,7 +46,7 @@ logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message
                     level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-tf_writer = SummaryWriter('nli_runs')
+
 
 
 class InputExample(object):
@@ -677,6 +678,10 @@ def main():
                         default=None,
                         type=str,
                         help="Initial checkpoint (usually from a pre-trained BERT model).")
+    parser.add_argument("--source",
+                        default=None,
+                        type=str,
+                        help="Start point for finetune.")
     parser.add_argument("--do_lower_case",
                         default=False,
                         action='store_true',
@@ -721,7 +726,7 @@ def main():
                         type=str,
                         help="Which set of tasks to train on.")
     parser.add_argument("--learning_rate",
-                        default=5e-5,
+                        default=2e-5,
                         type=float,
                         help="The initial learning rate for Adam.")
     parser.add_argument("--num_train_epochs",
@@ -758,7 +763,6 @@ def main():
                         default=1,
                         help="Number of updates steps to accumualte before performing a backward/update pass.")
     args = parser.parse_args()
-
     processors = {
         "mnli": MnliProcessor,
         "mrpc": MrpcProcessor,
@@ -819,7 +823,9 @@ def main():
     task_names = args.tasks.split(',')
 
     output_dir = os.path.join(args.output_dir,
-                              '_'.join(task_names) + '_' + os.path.basename(args.bert_config_file).replace('.json', ''))
+                              args.source+ '_TO_'+ '_'.join(task_names) + '_' + os.path.basename(args.bert_config_file).replace('.json', '')+'_'+ uuid.uuid4().hex[:8])
+    tf_writer = SummaryWriter(os.path.join(output_dir, 'log'))
+    json.dump(vars(args), open(os.path.join(output_dir, 'run_config.json'), 'w'), indent=2)
     os.makedirs(output_dir, exist_ok=True)
     processor_list = [processors[task_name]() for task_name in task_names]
     label_list = [processor.get_labels() for processor in processor_list]
@@ -838,7 +844,6 @@ def main():
         num_train_steps = int(
             total_train_examples / args.train_batch_size * args.num_train_epochs)
         total_tr = num_train_steps
-        # 每个epoch只过一半的数据，防止边界case
         steps_per_epoch = int(num_train_steps / args.num_train_epochs)
 
     if args.h_aug is not 'n/a':
