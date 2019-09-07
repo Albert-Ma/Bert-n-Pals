@@ -852,7 +852,7 @@ def main():
 
     if args.init_checkpoint is not None:
         if args.load_all:
-            missing_keys, unexpected_keys = model.load_state_dict(torch.load(args.init_checkpoint, map_location='cpu'),strict=False)
+            missing_keys, unexpected_keys = model.load_state_dict(torch.load(args.init_checkpoint, map_location='cpu'), strict=False)
             logger.info('missing keys: {}'.format(missing_keys))
             logger.info('unexpected keys: {}'.format(unexpected_keys))
         elif args.multi:
@@ -870,8 +870,13 @@ def main():
                     update[n] = partial[n]
             model.bert.load_state_dict(update)
         else:
-            model.bert.load_state_dict(torch.load(
-                args.init_checkpoint, map_location='cpu'))
+            # Only initialized bert part params
+            bert_partial = torch.load(args.init_checkpoint, map_location='cpu')
+            update = {}
+            for n, p in bert_partial.items():
+                if 'bert' in n:
+                    update[n[5:]] = bert_partial[n]
+            model.bert.load_state_dict(update, strict=False)
 
     if args.freeze:
         for n, p in model.bert.named_parameters():
