@@ -635,7 +635,7 @@ def do_eval(model, logger, args, device, tr_loss, nb_tr_steps, global_step, proc
 
     output_eval_file = os.path.join(
         output_dir, "{}_eval_results.txt".format(task_name))
-    with open(output_eval_file, "w") as writer:
+    with open(output_eval_file, "a+") as writer:
         logger.info("***** {} Eval results *****".format(task_name))
         for key in sorted(result.keys()):
             logger.info("  %s = %s", key, str(result[key]))
@@ -821,9 +821,12 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     task_names = args.tasks.split(',')
-
-    output_dir = os.path.join(args.output_dir,
-                              args.source+ '_TO_'+ '_'.join(task_names) + '_' + os.path.basename(args.bert_config_file).replace('.json', '')+'_'+ uuid.uuid4().hex[:8])
+    if args.source != None:
+        output_dir = os.path.join(args.output_dir,
+                                  args.source+ '_TO_'+ '_'.join(task_names) + '_' + os.path.basename(args.bert_config_file).replace('.json', '')+'_'+ uuid.uuid4().hex[:8])
+    else:
+        output_dir = os.path.join(args.output_dir,
+                                  '_'.join(task_names) + '_' + os.path.basename(args.bert_config_file).replace('.json',''))
     tf_writer = SummaryWriter(os.path.join(output_dir, 'log'))
     json.dump(vars(args), open(os.path.join(output_dir, 'run_config.json'), 'w'), indent=2)
     os.makedirs(output_dir, exist_ok=True)
@@ -870,13 +873,16 @@ def main():
                     update[n] = partial[n]
             model.bert.load_state_dict(update)
         else:
-            # Only initialized bert part params
+            # Only initialized bert part params which has no 'bert' prefix
             bert_partial = torch.load(args.init_checkpoint, map_location='cpu')
+            model_dict = model.state_dict()
             update = {}
-            for n, p in bert_partial.items():
+            for n, p in model_dict.items():
                 if 'bert' in n:
-                    update[n[5:]] = bert_partial[n]
-            model.bert.load_state_dict(update, strict=False)
+                    update[n[5:]] = bert_partial[n[5:]]
+            missing_keys, unexpected_keys = model.bert.load_state_dict(update, strict=False)
+            logger.info('missing keys: {}'.format(missing_keys))
+            logger.info('unexpected keys: {}'.format(unexpected_keys))
 
     if args.freeze:
         for n, p in model.bert.named_parameters():
