@@ -48,7 +48,6 @@ logger = logging.getLogger(__name__)
 
 
 
-
 class InputExample(object):
     """A single training/test example for simple sequence classification."""
 
@@ -746,6 +745,9 @@ def main():
                         default=False,
                         action='store_true',
                         help="Freeze base network weights")
+    parser.add_argument("--freeze_regex",
+                        default='no',
+                        help="Freeze code")
     parser.add_argument("--no_cuda",
                         default=False,
                         action='store_true',
@@ -763,6 +765,21 @@ def main():
                         default=1,
                         help="Number of updates steps to accumualte before performing a backward/update pass.")
     args = parser.parse_args()
+    # config logger
+    task_names = args.tasks.split(',')
+
+    output_dir = os.path.join(args.output_dir,
+                              args.source+ '_TO_'+ '_'.join(task_names) + '_' + os.path.basename(args.bert_config_file).replace('.json', '')+ '_'+ args.freeze_regex +'_'+ uuid.uuid4().hex[:8])
+    tf_writer = SummaryWriter(os.path.join(output_dir, 'log'))
+    json.dump(vars(args), open(os.path.join(output_dir, 'run_config.json'), 'w'), indent=2)
+    os.makedirs(output_dir, exist_ok=True)
+
+    log_file = os.path.join(output_dir,'std.log')
+    if log_file:
+        logfile = logging.FileHandler(log_file, 'w')
+        logger.addHandler(logfile)
+
+
     processors = {
         "mnli": MnliProcessor,
         "mrpc": MrpcProcessor,
@@ -818,15 +835,7 @@ def main():
             "Cannot use sequence length {} because the BERT model was only trained up to sequence length {}".format(
                 args.max_seq_length, bert_config.max_position_embeddings))
 
-    os.makedirs(args.output_dir, exist_ok=True)
-
-    task_names = args.tasks.split(',')
-
-    output_dir = os.path.join(args.output_dir,
-                              args.source+ '_TO_'+ '_'.join(task_names) + '_' + os.path.basename(args.bert_config_file).replace('.json', '')+'_'+ uuid.uuid4().hex[:8])
-    tf_writer = SummaryWriter(os.path.join(output_dir, 'log'))
-    json.dump(vars(args), open(os.path.join(output_dir, 'run_config.json'), 'w'), indent=2)
-    os.makedirs(output_dir, exist_ok=True)
+    
     processor_list = [processors[task_name]() for task_name in task_names]
     label_list = [processor.get_labels() for processor in processor_list]
 
@@ -872,24 +881,98 @@ def main():
         else:
             model.bert.load_state_dict(torch.load(
                 args.init_checkpoint, map_location='cpu'))
+    
+    
+    tuned, non_tuned, total = 0, 0, 0
+    for n, p in model.bert.named_parameters():
+        total += p.numel()
 
     if args.freeze:
         for n, p in model.bert.named_parameters():
             if 'aug' in n or 'classifier' in n or 'mult' in n or 'gamma' in n or 'beta' in n:
                 continue
             p.requires_grad = False
+    def freeze_by_layer(layerno):
+        freeze_layers = list(range(12))
+        freeze_layers.remove(int(layerno))
+        freeze_layers = ['encoder.layer.{}.'.format(no) for no in freeze_layers]
+        for n, p in model.bert.named_parameters():
+            if 'embeddings' in n:
+                p.requires_grad = False
+            if 'pooler' in n:
+                p.requires_grad = False
+            for freeze_layer in freeze_layers:
+                if n.startswith(freeze_layer):
+                    p.requires_grad = False
+        for n, p in model.bert.named_parameters():
+            logger.info('{}\t{}'.format(p.requires_grad,n))
 
+    
+    if args.freeze_regex in [str(x) for x in range(11)]:
+        logger.info('Tune some layer!')
+        freeze_by_layer(args.freeze_regex)
+
+    if args.freeze_regex == 'all':
+        logger.info('Tune all bias parameters!')
+        for  n, p in model.bert.named_parameters(): 
+            if "bias" not in n:
+                p.requires_grad = False
+                non_tuned += p.numel()
+            else:
+                tuned += p.numel()
+
+    if args.freeze_regex == 'attention_bias':
+        logger.info('Tune all attetnion bias parameters!')
+        for  n, p in model.bert.named_parameters(): 
+            if "bias" in n and 'attention' in n:
+                tuned += p.numel()
+            else:
+                p.requires_grad = False
+                non_tuned += p.numel()
+                
+    if args.freeze_regex == 'linear_bias':
+        logger.info('Tune all linear bias parameters!')
+        for  n, p in model.bert.named_parameters(): 
+            if "bias" in n and ('output' in n or 'intermediate' in n):
+                tuned += p.numel()
+            else:
+                p.requires_grad = False
+                non_tuned += p.numel()
+
+    if args.freeze_regex == 'layer_norm':
+        logger.info('Tune all layer norm bias parameters!')
+        for  n, p in model.bert.named_parameters(): 
+            if 'gamma' in n or 'beta' in n:
+                tuned += p.numel()
+            else:
+                p.requires_grad = False
+                non_tuned += p.numel()
+    
+    if args.freeze_regex == 'attn_self':
+        logger.info('Tune all layer attention parameters!')
+        for  n, p in model.bert.named_parameters(): 
+            if 'attention' in n:
+                tuned += p.numel()
+            else:
+                p.requires_grad = False
+                non_tuned += p.numel()
+
+    
+    for n, p in model.bert.named_parameters():
+        logger.info('{}\t{}'.format(p.requires_grad,n))
+    
+    logger.info('tuned:{}({}), not tuned: {}'.format(tuned, round(tuned/total, 6), non_tuned))
+    
     model.to(device)
-
     if n_gpu > 1:
         model = torch.nn.DataParallel(model)
     if args.optim == 'normal':
         no_decay = ['bias', 'gamma', 'beta']
         optimizer_parameters = [
             {'params': [p for n, p in model.named_parameters() if not any(
-                nd in n for nd in no_decay)], 'weight_decay_rate': 0.01},
+                nd in n for nd in no_decay) and p.requires_grad], 'weight_decay_rate': 0.01},
             {'params': [p for n, p in model.named_parameters() if any(
-                nd in n for nd in no_decay)], 'weight_decay_rate': 0.0}
+                nd in n for nd in no_decay) and p.requires_grad] , 'weight_decay_rate': 0.0}
         ]
         optimizer = BERTAdam(optimizer_parameters,
                              lr=args.learning_rate,
@@ -1027,13 +1110,18 @@ def main():
                 best_score = ev_acc
                 model_dir = os.path.join(output_dir, "best_model.pth")
                 torch.save(model.state_dict(), model_dir)
-            logger.info("Best Total acc: {}".format(best_score))
+                output_eval_file = os.path.join(
+                        output_dir, "best_eval_results.txt")
+                with open(output_eval_file, "w") as writer:
+                    logger.info("***** Best Eval results *****")
+                    writer.write("%s = %s\n" % ('best_score', ev_acc))
 
-        ev_acc = 0.
-        for i, task in enumerate(task_names):
-            ev_acc += do_eval(model, logger, args, device, tr_loss[i], nb_tr_steps[i], global_step, processor_list[i],
-                              label_list[i], tokenizer, eval_loaders[i], task_id_mappings[task], task_names, task, output_dir)
-        logger.info("Total acc: {}".format(ev_acc))
+        # This evaluation is not necessary
+        # ev_acc = 0.
+        # for i, task in enumerate(task_names):
+        #     ev_acc += do_eval(model, logger, args, device, tr_loss[i], nb_tr_steps[i], global_step, processor_list[i],
+        #                       label_list[i], tokenizer, eval_loaders[i], task_id_mappings[task], task_names, task, output_dir)
+        # logger.info("Total acc: {}".format(ev_acc))
 
 
 if __name__ == "__main__":
