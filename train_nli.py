@@ -83,11 +83,11 @@ class InputFeatures(object):
 class DataProcessor(object):
     """Base class for data converters for sequence classification data sets."""
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, sample=False):
         """Gets a collection of `InputExample`s for the train set."""
         raise NotImplementedError()
 
-    def get_dev_examples(self, data_dir):
+    def get_dev_examples(self, data_dir, sample=False):
         """Gets a collection of `InputExample`s for the dev set."""
         raise NotImplementedError()
 
@@ -118,23 +118,25 @@ class DataProcessor(object):
 class MsMarcoProcessor(DataProcessor):
     """Processor for the MsMarco data set."""
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, sample=False):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train12w_sample.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train12w_sample.tsv")), "train", sample)
 
-    def get_dev_examples(self, data_dir):
+    def get_dev_examples(self, data_dir, sample=False):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev10k_sample.tsv")), "dev")
+            self._read_tsv(os.path.join(data_dir, "dev10k_sample.tsv")), "dev", False)
 
     def get_labels(self):
         """See base class."""
         return ["0", "1"]
 
-    def _create_examples(self, lines, set_type):
+    def _create_examples(self, lines, set_type, sample):
         """Creates examples for the training and dev sets."""
         examples = []
+        if sample:
+            lines = random.sample(lines, 100000)
         for (i, line) in enumerate(lines):
             guid = "%s-%s" % (set_type, i)
             text_a = tokenization.convert_to_unicode(line[0])
@@ -148,21 +150,21 @@ class MsMarcoProcessor(DataProcessor):
 class WikiqaProcessor(DataProcessor):
     """Processor for the Wikiqa data set."""
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, sample=False):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "WikiQA-train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "WikiQA-train.tsv")), "train", False)
 
-    def get_dev_examples(self, data_dir):
+    def get_dev_examples(self, data_dir, sample=False):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "WikiQA-dev.tsv")), "dev")
+            self._read_tsv(os.path.join(data_dir, "WikiQA-dev.tsv")), "dev", False)
 
     def get_labels(self):
         """See base class."""
         return ["0", "1"]
 
-    def _create_examples(self, lines, set_type):
+    def _create_examples(self, lines, set_type, sample):
         """Creates examples for the training and dev sets."""
         examples = []
         for (i, line) in enumerate(lines):
@@ -180,21 +182,21 @@ class WikiqaProcessor(DataProcessor):
 class MrpcProcessor(DataProcessor):
     """Processor for the MRPC data set (GLUE version)."""
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, sample=False):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train", False)
 
-    def get_dev_examples(self, data_dir):
+    def get_dev_examples(self, data_dir, sample=False):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev", False)
 
     def get_labels(self):
         """See base class."""
         return ["0", "1"]
 
-    def _create_examples(self, lines, set_type):
+    def _create_examples(self, lines, set_type, sample):
         """Creates examples for the training and dev sets."""
         examples = []
         for (i, line) in enumerate(lines):
@@ -212,24 +214,26 @@ class MrpcProcessor(DataProcessor):
 class MnliProcessor(DataProcessor):
     """Processor for the MultiNLI data set (GLUE version)."""
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, sample=False):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train", sample)
 
-    def get_dev_examples(self, data_dir):
+    def get_dev_examples(self, data_dir, sample=False):
         """See base class."""
         return self._create_examples(
             self._read_tsv(os.path.join(data_dir, "dev_matched.tsv")),
-            "dev_matched")
+            "dev_matched", False)
 
     def get_labels(self):
         """See base class."""
         return ["contradiction", "entailment", "neutral"]
 
-    def _create_examples(self, lines, set_type):
+    def _create_examples(self, lines, set_type, sample):
         """Creates examples for the training and dev sets."""
         examples = []
+        if sample:
+            lines = random.sample(lines, 100000)
         for (i, line) in enumerate(lines):
             if i == 0:
                 continue
@@ -246,25 +250,27 @@ class MnliProcessor(DataProcessor):
 class SNLIProcessor(DataProcessor):
     """Processor for the SNLI dataset."""
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, sample=False):
         """See base class."""
         return self._create_examples(
-            self._read_jsonl(os.path.join(data_dir, "snli_1.0_train.jsonl")), "train")
+            self._read_jsonl(os.path.join(data_dir, "snli_1.0_train.jsonl")), "train", sample)
 
-    def get_dev_examples(self, data_dir):
+    def get_dev_examples(self, data_dir, sample=False):
         """See base class."""
         return self._create_examples(
             self._read_jsonl(os.path.join(data_dir, "snli_1.0_dev.jsonl")),
-            "dev_matched")
+            "dev_matched", False)
 
     def get_labels(self):
         """See base class."""
         return ["contradiction", "entailment", "neutral"]
 
-    def _create_examples(self, lines, set_type):
+    def _create_examples(self, lines, set_type, sample):
         """Creates examples for the training and dev sets."""
         examples = []
         err_cnt = 0
+        if sample:
+            lines = random.sample(lines, 100000)
         for (i, line) in enumerate(lines):
             guid = "%s-%s" % (set_type,
                               tokenization.convert_to_unicode(line['pairID']))
@@ -283,22 +289,22 @@ class SNLIProcessor(DataProcessor):
 class ScitailProcessor(DataProcessor):
     """Processor for the Scitail dataset."""
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, sample=False):
         """See base class."""
         return self._create_examples(
-            self._read_jsonl(os.path.join(data_dir, "scitail_1.0_train.txt")), "train")
+            self._read_jsonl(os.path.join(data_dir, "scitail_1.0_train.txt")), "train", False)
 
-    def get_dev_examples(self, data_dir):
+    def get_dev_examples(self, data_dir, sample=False):
         """See base class."""
         return self._create_examples(
             self._read_jsonl(os.path.join(data_dir, "scitail_1.0_dev.txt")),
-            "dev_matched")
+            "dev_matched", False)
 
     def get_labels(self):
         """See base class."""
         return ["contradiction", "entailment", "neutral"]
 
-    def _create_examples(self, lines, set_type):
+    def _create_examples(self, lines, set_type, sample):
         """Creates examples for the training and dev sets."""
         examples = []
         for (i, line) in enumerate(lines):
@@ -315,22 +321,22 @@ class ScitailProcessor(DataProcessor):
 class WnliProcessor(DataProcessor):
     """Processor for the Wnli data set (GLUE version)."""
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, sample=False):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train", False)
 
-    def get_dev_examples(self, data_dir):
+    def get_dev_examples(self, data_dir, sample=False):
         """See base class."""
         return self._create_examples(
             self._read_tsv(os.path.join(data_dir, "dev.tsv")),
-            "dev_matched")
+            "dev_matched", False)
 
     def get_labels(self):
         """See base class."""
         return ["0", "1"]
 
-    def _create_examples(self, lines, set_type):
+    def _create_examples(self, lines, set_type, sample):
         """Creates examples for the training and dev sets."""
         examples = []
         for (i, line) in enumerate(lines):
@@ -349,21 +355,21 @@ class WnliProcessor(DataProcessor):
 class STSProcessor(DataProcessor):
     """Processor for the STS-B data set (GLUE version)."""
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, sample=False):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train", sample)
 
-    def get_dev_examples(self, data_dir):
+    def get_dev_examples(self, data_dir, sample=False):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev", False)
 
     def get_labels(self):
         """See base class."""
         return ['None']
 
-    def _create_examples(self, lines, set_type):
+    def _create_examples(self, lines, set_type, sample):
         """Creates examples for the training and dev sets."""
         examples = []
         for (i, line) in enumerate(lines):
@@ -381,23 +387,25 @@ class STSProcessor(DataProcessor):
 class QQPProcessor(DataProcessor):
     """Processor for the QQP data set (GLUE version)."""
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, sample=False):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train", sample)
 
-    def get_dev_examples(self, data_dir):
+    def get_dev_examples(self, data_dir, sample=False):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev", False)
 
     def get_labels(self):
         """See base class."""
         return ["0", "1"]
 
-    def _create_examples(self, lines, set_type):
+    def _create_examples(self, lines, set_type, sample):
         """Creates examples for the training and dev sets."""
         examples = []
+        if sample:
+            lines = random.sample(lines, 100000)
         for (i, line) in enumerate(lines):
             if i == 0 or len(line) != 6:
                 continue
@@ -413,23 +421,25 @@ class QQPProcessor(DataProcessor):
 class QNLIProcessor(DataProcessor):
     """Processor for the QNLI data set (GLUE version)."""
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, sample=False):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train", sample)
 
-    def get_dev_examples(self, data_dir):
+    def get_dev_examples(self, data_dir, sample=False):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev", False)
 
     def get_labels(self):
         """See base class."""
         return ["not_entailment", "entailment"]
 
-    def _create_examples(self, lines, set_type):
+    def _create_examples(self, lines, set_type, sample):
         """Creates examples for the training and dev sets."""
         examples = []
+        if sample:
+            lines = random.sample(lines, 100000)
         for (i, line) in enumerate(lines):
             if i == 0:
                 continue
@@ -445,21 +455,21 @@ class QNLIProcessor(DataProcessor):
 class RTEProcessor(DataProcessor):
     """Processor for the RTE data set (GLUE version)."""
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, sample=False):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train", False)
 
-    def get_dev_examples(self, data_dir):
+    def get_dev_examples(self, data_dir, sample=False):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev", False)
 
     def get_labels(self):
         """See base class."""
         return ["not_entailment", "entailment"]
 
-    def _create_examples(self, lines, set_type):
+    def _create_examples(self, lines, set_type, sample):
         """Creates examples for the training and dev sets."""
         examples = []
         for (i, line) in enumerate(lines):
@@ -472,6 +482,91 @@ class RTEProcessor(DataProcessor):
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
         return examples
+
+
+class MulitiNLIProcessor(DataProcessor):
+    """Processor for the MulitiNLI data set (GLUE version)."""
+
+    def get_train_examples(self, data_dir, sample=False):
+        """See base class."""
+        data_dir = data_dir.split('/')
+        data_dir = '/'.join([data_dir[0], data_dir[1]])
+        print("data dir:{}".format(data_dir))
+        msmarco_examples = self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "msmarco/train12w_sample.tsv")), "train", sample, 'msmarco')
+        mnli_examples = self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "mnli/train.tsv")), "train", sample, 'mnli')
+        snli_examples = self._create_examples(
+            self._read_jsonl(os.path.join(data_dir, "snli/snli_1.0_train.jsonl")), "train", sample, 'snli')
+        qqp_examples = self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "qqp/train.tsv")), "train", sample, 'qqp')
+        qnli_examples = self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "qnli/train.tsv")), "train", sample, 'qnli')
+        return msmarco_examples+mnli_examples+snli_examples+qqp_examples+qnli_examples
+
+    def get_dev_examples(self, data_dir, sample=False):
+        """See base class."""
+        data_dir = data_dir.split('/')
+        data_dir = '/'.join([data_dir[0], data_dir[1]])
+        msmarco_examples = self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "msmarco/dev10k_sample.tsv")), "dev", sample, 'msmarco')
+        mnli_examples = self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "mnli/dev_matched.tsv")), "dev", sample, 'mnli')
+        snli_examples = self._create_examples(
+            self._read_jsonl(os.path.join(data_dir, "snli/snli_1.0_dev.jsonl")), "dev", sample, 'snli')
+        qqp_examples = self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "qqp/dev.tsv")), "dev", sample, 'qqp')
+        qnli_examples = self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "qnli/dev.tsv")), "dev", sample, 'qnli')
+        return msmarco_examples + mnli_examples + snli_examples + qqp_examples + qnli_examples
+
+    def get_labels(self):
+        """See base class."""
+        return ["not_entailment", "entailment"]
+
+    def _create_examples(self, lines, set_type, sample_num, dataset):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in enumerate(lines):
+            guid = "%s-%s" % (set_type, i)
+            if dataset == 'msmarco':
+                text_a = tokenization.convert_to_unicode(line[0])
+                text_b = tokenization.convert_to_unicode(line[1])
+                label = tokenization.convert_to_unicode(line[2])
+            elif dataset == 'mnli':
+                if i == 0:
+                    continue
+                text_a = tokenization.convert_to_unicode(line[8])
+                text_b = tokenization.convert_to_unicode(line[9])
+                label = tokenization.convert_to_unicode(line[-1])
+            elif dataset == 'snli':
+                text_a = tokenization.convert_to_unicode(line['sentence1'])
+                text_b = tokenization.convert_to_unicode(line['sentence2'])
+                label = tokenization.convert_to_unicode(line['gold_label'])
+                if label not in ["contradiction", "entailment", "neutral"]:
+                    continue
+            elif dataset == 'qqp':
+                if i == 0 or len(line) != 6:
+                    continue
+                text_a = tokenization.convert_to_unicode(line[3])
+                text_b = tokenization.convert_to_unicode(line[4])
+                label = tokenization.convert_to_unicode(line[-1])
+            else: # qnli
+                if i == 0:
+                    continue
+                guid = "%s-%s" % (set_type, i)
+                text_a = tokenization.convert_to_unicode(line[1])
+                text_b = tokenization.convert_to_unicode(line[2])
+                label = tokenization.convert_to_unicode(line[-1])
+            if dataset == 'msmarco' or dataset == 'qqp':
+                label = "entailment" if label == '1' else "not_entailment"
+            if dataset == 'mnli' or dataset == 'snli':
+                label = 'entailment' if label == "entailment" else "not_entailment"
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+        if set_type != 'train':
+            sample_num = 5000 if len(examples) > 5000 else len(examples) # 8:2  for now, set it fixed
+        return random.sample(examples, int(sample_num))
 
 
 def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer, task='none'):
@@ -682,6 +777,7 @@ def main():
                         default=None,
                         type=str,
                         help="Start point for finetune.")
+
     parser.add_argument("--do_lower_case",
                         default=False,
                         action='store_true',
@@ -706,6 +802,11 @@ def main():
     parser.add_argument("--sample",
                         default='rr',
                         help="How to sample tasks, other options 'prop', 'sqrt' or 'anneal'")
+    parser.add_argument("--dataset_sample",
+                        default=True,
+                        help="Whether to sample dataset from the original, 10k by default if it's true."
+                             "For MultiNLI, dataset_sample will be a number "
+                             "which represents the data num sampled from each dataset.")
     parser.add_argument("--do_eval",
                         default=False,
                         action='store_true',
@@ -774,7 +875,8 @@ def main():
         "scitail": ScitailProcessor,
         "wnli": WnliProcessor,
         "msmarco": MsMarcoProcessor,
-        "wikiqa": WikiqaProcessor
+        "wikiqa": WikiqaProcessor,
+        'multinli': MulitiNLIProcessor
     }
     task_id_mappings = {
         'mnli': 0,
@@ -787,12 +889,14 @@ def main():
         'scitail': 7,
         'wnli': 8,
         "msmarco": 9,
-        "wikiqa": 10
+        "wikiqa": 10,
+        "multinli": 11
     }
-    task_num_labels = [3, 2, 2, 2, 2, 2, 3, 3, 2, 2, 2]
+    task_num_labels = [3, 2, 2, 2, 2, 2, 3, 3, 2, 2, 2, 2]
     device = torch.device("cuda" if torch.cuda.is_available()
                           and not args.no_cuda else "cpu")
     n_gpu = torch.cuda.device_count()
+    logger.info("===========Start training {} task==============".format(args.tasks))
 
     if args.gradient_accumulation_steps < 1:
         raise ValueError("Invalid accumulate_gradients parameter: {}, should be >= 1".format(
@@ -823,10 +927,13 @@ def main():
     task_names = args.tasks.split(',')
     if args.source != None:
         output_dir = os.path.join(args.output_dir,
-                                  args.source+ '_TO_'+ '_'.join(task_names) + '_' + os.path.basename(args.bert_config_file).replace('.json', '')+'_'+ uuid.uuid4().hex[:8])
+                                  args.source+ '_TO_'+ '_'.join(task_names) + '_' +
+                                  os.path.basename(args.bert_config_file).replace('.json', '')+'_' +
+                                  str(args.learning_rate) + '_' +
+                                  uuid.uuid4().hex[:8])
     else:
         output_dir = os.path.join(args.output_dir,
-                                  '_'.join(task_names) + '_' + os.path.basename(args.bert_config_file).replace('.json',''))
+                                  '_'.join(task_names) + '100k_' + os.path.basename(args.bert_config_file).replace('.json',''))
     tf_writer = SummaryWriter(os.path.join(output_dir, 'log'))
     json.dump(vars(args), open(os.path.join(output_dir, 'run_config.json'), 'w'), indent=2)
     os.makedirs(output_dir, exist_ok=True)
@@ -841,7 +948,7 @@ def main():
     num_tasks = len(task_names)
     if args.do_train:
         train_examples = [processor.get_train_examples(
-            args.data_dir + data_dir) for processor, data_dir in zip(processor_list, task_names)]
+            args.data_dir + data_dir, sample=args.dataset_sample) for processor, data_dir in zip(processor_list, task_names)]
         num_train_examples = [len(tr) for tr in train_examples]
         total_train_examples = sum(num_train_examples)
         num_train_steps = int(
@@ -875,11 +982,18 @@ def main():
         else:
             # Only initialized bert part params which has no 'bert' prefix
             bert_partial = torch.load(args.init_checkpoint, map_location='cpu')
+            bert_prefix = False
+            if 'bert.embeddings.word_embeddings.weight' in bert_partial:
+                bert_prefix = True
+            print('Whether model dict have bert prefix:{}'.format(bert_prefix))
             model_dict = model.state_dict()
             update = {}
             for n, p in model_dict.items():
                 if 'bert' in n:
-                    update[n[5:]] = bert_partial[n[5:]]
+                    if bert_prefix:
+                        update[n[5:]] = bert_partial[n]
+                    else:
+                        update[n[5:]] = bert_partial[n[5:]]
             missing_keys, unexpected_keys = model.bert.load_state_dict(update, strict=False)
             logger.info('missing keys: {}'.format(missing_keys))
             logger.info('unexpected keys: {}'.format(unexpected_keys))
@@ -933,7 +1047,7 @@ def main():
         eval_loaders = []
         for i, task in enumerate(task_names):
             eval_examples = processor_list[i].get_dev_examples(
-                args.data_dir + task_names[i])
+                args.data_dir + task_names[i], sample=args.dataset_sample)
             eval_features = convert_examples_to_features(
                 eval_examples, label_list[i], args.max_seq_length, tokenizer, task)
             all_input_ids = torch.tensor(
