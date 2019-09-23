@@ -135,7 +135,8 @@ class MsMarcoProcessor(DataProcessor):
     def _create_examples(self, lines, set_type, sample):
         """Creates examples for the training and dev sets."""
         examples = []
-
+        if sample:
+            lines = random.sample(lines, 100000)
         for (i, line) in enumerate(lines):
             guid = "%s-%s" % (set_type, i)
             text_a = tokenization.convert_to_unicode(line[0])
@@ -143,8 +144,6 @@ class MsMarcoProcessor(DataProcessor):
             label = tokenization.convert_to_unicode(line[2])
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
-            if sample:
-                examples = random.sample(examples, 100000)
         return examples
 
 
@@ -234,6 +233,8 @@ class MnliProcessor(DataProcessor):
     def _create_examples(self, lines, set_type, sample):
         """Creates examples for the training and dev sets."""
         examples = []
+        if sample:
+            lines = random.sample(lines, 100000)
         for (i, line) in enumerate(lines):
             if i == 0:
                 continue
@@ -246,8 +247,6 @@ class MnliProcessor(DataProcessor):
                 label = 'not_entailment'
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
-        if sample:
-            examples = random.sample(examples, 100000)
         return examples
 
 
@@ -274,6 +273,8 @@ class SNLIProcessor(DataProcessor):
         """Creates examples for the training and dev sets."""
         examples = []
         err_cnt = 0
+        if sample:
+            lines = random.sample(lines, 100000)
         for (i, line) in enumerate(lines):
             guid = "%s-%s" % (set_type,
                               tokenization.convert_to_unicode(line['pairID']))
@@ -288,8 +289,6 @@ class SNLIProcessor(DataProcessor):
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
         print('SNLI dataset has {} error!'.format(err_cnt))
-        if sample:
-            examples = random.sample(examples, 100000)
         return examples
 
 
@@ -314,7 +313,6 @@ class ScitailProcessor(DataProcessor):
     def _create_examples(self, lines, set_type, sample):
         """Creates examples for the training and dev sets."""
         examples = []
-        labels = set()
         for (i, line) in enumerate(lines):
             guid = "%s-%s" % (set_type,
                               hash(line['sentence1']+line['sentence2']))
@@ -323,8 +321,6 @@ class ScitailProcessor(DataProcessor):
             label = tokenization.convert_to_unicode(line['gold_label'])
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
-            labels.add(label)
-        print(labels)
         return examples
 
 
@@ -414,6 +410,8 @@ class QQPProcessor(DataProcessor):
     def _create_examples(self, lines, set_type, sample):
         """Creates examples for the training and dev sets."""
         examples = []
+        if sample:
+            lines = random.sample(lines, 100000)
         for (i, line) in enumerate(lines):
             if i == 0 or len(line) != 6:
                 continue
@@ -423,8 +421,6 @@ class QQPProcessor(DataProcessor):
             label = tokenization.convert_to_unicode(line[-1])
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
-        if sample:
-            examples = random.sample(examples, 100000)
         return examples
 
 
@@ -448,6 +444,8 @@ class QNLIProcessor(DataProcessor):
     def _create_examples(self, lines, set_type, sample):
         """Creates examples for the training and dev sets."""
         examples = []
+        if sample:
+            lines = random.sample(lines, 100000)
         for (i, line) in enumerate(lines):
             if i == 0:
                 continue
@@ -457,8 +455,6 @@ class QNLIProcessor(DataProcessor):
             label = tokenization.convert_to_unicode(line[-1])
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
-        if sample:
-            examples = random.sample(examples, 100000)
         return examples
 
 
@@ -703,9 +699,7 @@ def accuracy(out, labels):
     return np.sum(outputs == labels)
 
 
-def do_eval(model, logger, args, device, tr_loss, nb_tr_steps, global_step, processor,
-            label_list, tokenizer, eval_dataloader, task_model_index, task_names, task_name, output_dir):
-
+def do_eval(model, logger, device, eval_dataloader, task_model_index, task_name, output_dir, tf_writer):
     model.eval()
     eval_loss, eval_accuracy = 0, 0
     nb_eval_steps, nb_eval_examples = 0, 0
@@ -733,10 +727,11 @@ def do_eval(model, logger, args, device, tr_loss, nb_tr_steps, global_step, proc
     eval_accuracy = eval_accuracy / nb_eval_examples
 
     result = {'eval_loss': eval_loss,
-              'eval_accuracy': eval_accuracy,
-              'global_step': global_step,
-              'train_step': nb_tr_steps,
-              'loss': tr_loss/nb_tr_steps}
+              'eval_accuracy': eval_accuracy}
+    tf_writer.add_scalar('acc/{}'.format(task_name),
+                         eval_accuracy, nb_eval_steps)
+    tf_writer.add_scalar('loss/{}'.format(task_name),
+                         eval_loss, nb_eval_steps)
 
     output_eval_file = os.path.join(
         output_dir, "{}_eval_results.txt".format(task_name))
@@ -783,11 +778,10 @@ def main():
                         default=None,
                         type=str,
                         help="Initial checkpoint (usually from a pre-trained BERT model).")
-    parser.add_argument("--source",
+    parser.add_argument("--target",
                         default=None,
                         type=str,
                         help="Start point for finetune.")
-
     parser.add_argument("--do_lower_case",
                         default=False,
                         action='store_true',
@@ -826,7 +820,7 @@ def main():
                         type=int,
                         help="Total batch size for training.")
     parser.add_argument("--eval_batch_size",
-                        default=8,
+                        default=64,
                         type=int,
                         help="Total batch size for eval.")
     parser.add_argument("--h_aug",
@@ -902,7 +896,6 @@ def main():
         "wikiqa": 10,
         "multinli": 11
     }
-    # task_num_labels = [3, 2, 2, 2, 2, 2, 3, 2, 2, 2, 2, 2]
     task_num_labels = [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
     device = torch.device("cuda" if torch.cuda.is_available()
                           and not args.no_cuda else "cpu")
@@ -935,68 +928,32 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    task_names = args.tasks.split(',')
-    if args.source != None:
-        output_dir = os.path.join(args.output_dir,
-                                  args.source+ '_TO_'+ '_'.join(task_names) + '_' +
-                                  os.path.basename(args.bert_config_file).replace('.json', '')+'_' +
-                                  str(args.learning_rate) + '_' +
-                                  uuid.uuid4().hex[:8])
-    elif args.dataset_sample:
-        output_dir = os.path.join(args.output_dir,
-                                  '_'.join(task_names) + '100k_' +
-                                  os.path.basename(args.bert_config_file).replace('.json', ''))
-    else:
-        output_dir = os.path.join(args.output_dir,
-                                  '_'.join(task_names) +
-                                  os.path.basename(args.bert_config_file).replace('.json', '') +
-                                  str(args.learning_rate))
-
+    task_name = args.tasks
+    output_dir = os.path.join(args.output_dir,
+                              "generalize_from_" + task_name + '_TO_' + args.target + '_' +
+                              os.path.basename(args.bert_config_file).replace('.json', '') +
+                              '_' + uuid.uuid4().hex[:8])
     tf_writer = SummaryWriter(os.path.join(output_dir, 'log'))
     json.dump(vars(args), open(os.path.join(output_dir, 'run_config.json'), 'w'), indent=2)
     os.makedirs(output_dir, exist_ok=True)
-    processor_list = [processors[task_name]() for task_name in task_names]
-    label_list = [processor.get_labels() for processor in processor_list]
+    processor = processors[args.target]()
+    label_list = processor.get_labels()
 
     tokenizer = tokenization.FullTokenizer(
         vocab_file=args.vocab_file, do_lower_case=args.do_lower_case)
 
-    train_examples = None
-    num_train_steps = None
-    num_tasks = len(task_names)
-    if args.do_train:
-        train_examples = [processor.get_train_examples(
-            args.data_dir + data_dir, sample=args.dataset_sample) for processor, data_dir in zip(processor_list, task_names)]
-        num_train_examples = [len(tr) for tr in train_examples]
-        total_train_examples = sum(num_train_examples)
-        num_train_steps = int(
-            total_train_examples / args.train_batch_size * args.num_train_epochs)
-        total_tr = num_train_steps
-        steps_per_epoch = int(num_train_steps / args.num_train_epochs)
-
-    if args.h_aug is not 'n/a':
-        bert_config.hidden_size_aug = int(args.h_aug)
     model = BertForMultiNLI(bert_config, task_num_labels)
 
     if args.init_checkpoint is not None:
+        logger.info("######### Need to initialize {} classifier.".format(task_id_mappings[task_name]))
         if args.load_all:
-            missing_keys, unexpected_keys = model.load_state_dict(torch.load(args.init_checkpoint, map_location='cpu'), strict=False)
+            model_dict = torch.load(args.init_checkpoint, map_location='cpu')
+            # for n, p in model_dict.items():
+            #     if 'bert' not in n:
+            #         logger.info("######### This model ckpt initialize {} classifier".format(n))
+            missing_keys, unexpected_keys = model.load_state_dict(model_dict, strict=False)
             logger.info('missing keys: {}'.format(missing_keys))
             logger.info('unexpected keys: {}'.format(unexpected_keys))
-        elif args.multi:
-            partial = torch.load(args.init_checkpoint, map_location='cpu')
-            model_dict = model.bert.state_dict()
-            update = {}
-            for n, p in model_dict.items():
-                if 'aug' in n or 'mult' in n:
-                    update[n] = p
-                    if 'pooler.mult' in n and 'bias' in n:
-                        update[n] = partial['pooler.dense.bias']
-                    if 'pooler.mult' in n and 'weight' in n:
-                        update[n] = partial['pooler.dense.weight']
-                else:
-                    update[n] = partial[n]
-            model.bert.load_state_dict(update)
         else:
             # Only initialized bert part params which has no 'bert' prefix
             bert_partial = torch.load(args.init_checkpoint, map_location='cpu')
@@ -1016,167 +973,28 @@ def main():
             logger.info('missing keys: {}'.format(missing_keys))
             logger.info('unexpected keys: {}'.format(unexpected_keys))
 
-    if args.freeze:
-        for n, p in model.bert.named_parameters():
-            if 'aug' in n or 'classifier' in n or 'mult' in n or 'gamma' in n or 'beta' in n:
-                continue
-            p.requires_grad = False
-
     model.to(device)
 
-    if n_gpu > 1:
-        model = torch.nn.DataParallel(model)
-    if args.optim == 'normal':
-        no_decay = ['bias', 'gamma', 'beta']
-        optimizer_parameters = [
-            {'params': [p for n, p in model.named_parameters() if not any(
-                nd in n for nd in no_decay)], 'weight_decay_rate': 0.01},
-            {'params': [p for n, p in model.named_parameters() if any(
-                nd in n for nd in no_decay)], 'weight_decay_rate': 0.0}
-        ]
-        optimizer = BERTAdam(optimizer_parameters,
-                             lr=args.learning_rate,
-                             warmup=args.warmup_proportion,
-                             t_total=total_tr)
-    else:
-        no_decay = ['bias', 'gamma', 'beta']
-        base = ['attn']
-        optimizer_parameters = [
-            {'params': [p for n, p in model.named_parameters() if not any(
-                nd in n for nd in no_decay) and not any(nd in n for nd in base)], 'weight_decay_rate': 0.01},
-            {'params': [p for n, p in model.named_parameters() if any(
-                nd in n for nd in no_decay) and not any(nd in n for nd in base)], 'weight_decay_rate': 0.0}
-        ]
-        optimizer = BERTAdam(optimizer_parameters,
-                             lr=args.learning_rate,
-                             warmup=args.warmup_proportion,
-                             t_total=total_tr)
-        optimizer_parameters_mult = [
-            {'params': [p for n, p in model.named_parameters() if not any(
-                nd in n for nd in no_decay) and any(nd in n for nd in base)], 'weight_decay_rate': 0.01},
-            {'params': [p for n, p in model.named_parameters() if any(
-                nd in n for nd in no_decay) and any(nd in n for nd in base)], 'weight_decay_rate': 0.0}
-        ]
-        optimizer_mult = BERTAdam(optimizer_parameters_mult,
-                                  lr=3e-4,
-                                  warmup=args.warmup_proportion,
-                                  t_total=total_tr)
-    if args.do_eval:
-        eval_loaders = []
-        for i, task in enumerate(task_names):
-            eval_examples = processor_list[i].get_dev_examples(
-                args.data_dir + task_names[i], sample=args.dataset_sample)
-            eval_features = convert_examples_to_features(
-                eval_examples, label_list[i], args.max_seq_length, tokenizer, task)
-            all_input_ids = torch.tensor(
-                [f.input_ids for f in eval_features], dtype=torch.long)
-            all_input_mask = torch.tensor(
-                [f.input_mask for f in eval_features], dtype=torch.long)
-            all_segment_ids = torch.tensor(
-                [f.segment_ids for f in eval_features], dtype=torch.long)
-            all_label_ids = torch.tensor(
-                [f.label_id for f in eval_features], dtype=torch.long)
+    eval_examples = processor.get_dev_examples(os.path.join(args.data_dir, args.target), sample=args.dataset_sample)
+    eval_features = convert_examples_to_features(
+        eval_examples, label_list, args.max_seq_length, tokenizer, args.target)
+    all_input_ids = torch.tensor(
+        [f.input_ids for f in eval_features], dtype=torch.long)
+    all_input_mask = torch.tensor(
+        [f.input_mask for f in eval_features], dtype=torch.long)
+    all_segment_ids = torch.tensor(
+        [f.segment_ids for f in eval_features], dtype=torch.long)
+    all_label_ids = torch.tensor(
+        [f.label_id for f in eval_features], dtype=torch.long)
 
-            eval_data = TensorDataset(
-                all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
-            eval_sampler = SequentialSampler(eval_data)
-            eval_loaders.append(DataLoader(
-                eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size))
+    eval_data = TensorDataset(
+        all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
+    eval_sampler = SequentialSampler(eval_data)
+    eval_loader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
 
-    global_step = 0
-    if args.do_train:
-        loaders = []
-        logger.info("  Num Tasks = %d", len(train_examples))
-        for i, task in enumerate(task_names):
-            train_features = convert_examples_to_features(
-                train_examples[i], label_list[i], args.max_seq_length, tokenizer, task)
-            logger.info("***** training data for %s *****", task)
-            logger.info("  Data size = %d", len(train_features))
-
-            all_input_ids = torch.tensor(
-                [f.input_ids for f in train_features], dtype=torch.long)
-            all_input_mask = torch.tensor(
-                [f.input_mask for f in train_features], dtype=torch.long)
-            all_segment_ids = torch.tensor(
-                [f.segment_ids for f in train_features], dtype=torch.long)
-            all_label_ids = torch.tensor(
-                [f.label_id for f in train_features], dtype=torch.long)
-
-            train_data = TensorDataset(
-                all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
-            train_sampler = RandomSampler(train_data)
-            loaders.append(iter(DataLoader(
-                train_data, sampler=train_sampler, batch_size=args.train_batch_size)))
-        total_params = sum(p.numel() for p in model.parameters())
-        logger.info("  Num param = {}".format(total_params))
-        loaders = [cycle(it) for it in loaders]
-        model.train()
-        best_score = 0.
-        if args.sample == 'sqrt' or args.sample == 'prop':
-            probs = num_train_examples
-            if args.sample == 'prop':
-                alpha = 1.
-            if args.sample == 'sqrt':
-                alpha = 0.5
-            probs = [p**alpha for p in probs]
-            tot = sum(probs)
-            probs = [p/tot for p in probs]
-        epoch = 0
-        tr_loss = [0. for i in range(num_tasks)]
-        nb_tr_steps = [0 for i in range(num_tasks)]
-        nb_tr_instances = [0 for i in range(num_tasks)]
-        for _ in trange(int(args.num_train_epochs), desc="Epoch"):
-            if args.sample == 'anneal':
-                probs = num_train_examples
-                alpha = 1. - 0.8 * epoch / (args.num_train_epochs - 1)
-                probs = [p**alpha for p in probs]
-                tot = sum(probs)
-                probs = [p/tot for p in probs]
-
-            for step in tqdm(range(steps_per_epoch)):
-                task_index = np.random.choice(len(task_names), p=probs)
-                task_model_index = task_id_mappings[task_names[task_index]]
-                batch = next(loaders[task_index])
-                batch = tuple(t.to(device) for t in batch)
-                input_ids, input_mask, segment_ids, label_ids = batch
-                loss, _ = model(input_ids, segment_ids,
-                                input_mask, task_model_index, label_ids)
-                if n_gpu > 1:
-                    loss = loss.mean()  # mean() to average on multi-gpu.
-                if args.gradient_accumulation_steps > 1:
-                    loss = loss / args.gradient_accumulation_steps
-                loss.backward()
-                tr_loss[task_index] += loss.item() * input_ids.size(0)
-                nb_tr_instances[task_index] += input_ids.size(0)
-                nb_tr_steps[task_index] += 1
-                # if step % 1000 < num_tasks:
-                #     logger.info("Task: {}, Step: {}".format(task_names[task_index], step))
-                #     logger.info("Loss: {}".format(tr_loss[task_index]/nb_tr_instances[task_index]))
-                tf_writer.add_scalar('loss/{}'.format(task_names[task_index]),
-                                     tr_loss[task_index]/nb_tr_instances[task_index], nb_tr_steps[task_index])
-                if (step + 1) % args.gradient_accumulation_steps == 0:
-                    optimizer.step()    # We have accumulated enought gradients
-                    if args.optim != 'normal':
-                        optimizer_mult.step()
-                    model.zero_grad()
-                    global_step += 1
-            epoch += 1
-            ev_acc = 0.
-            for i, task in enumerate(task_names):
-                ev_acc += do_eval(model, logger, args, device, tr_loss[i], nb_tr_steps[i], global_step, processor_list[i],
-                                  label_list[i], tokenizer, eval_loaders[i], task_id_mappings[task], task_names, task, output_dir)
-            logger.info("Total acc: {}".format(ev_acc))
-            if ev_acc > best_score:
-                best_score = ev_acc
-                model_dir = os.path.join(output_dir, "best_model.pth")
-                torch.save(model.state_dict(), model_dir)
-            logger.info("Best Total acc: {}".format(best_score))
-
-        ev_acc = 0.
-        for i, task in enumerate(task_names):
-            ev_acc += do_eval(model, logger, args, device, tr_loss[i], nb_tr_steps[i], global_step, processor_list[i],
-                              label_list[i], tokenizer, eval_loaders[i], task_id_mappings[task], task_names, task, output_dir)
-        logger.info("Total acc: {}".format(ev_acc))
+    ev_acc = do_eval(model, logger, device, eval_loader, task_id_mappings[task_name],
+                     args.target, output_dir, tf_writer)
+    logger.info("Total acc: {}".format(ev_acc))
 
 
 if __name__ == "__main__":
