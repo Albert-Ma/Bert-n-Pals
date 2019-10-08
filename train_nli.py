@@ -19,6 +19,7 @@ from __future__ import division
 from __future__ import print_function
 
 import csv
+import unicodedata
 from itertools import cycle
 import os
 import logging
@@ -26,6 +27,7 @@ import argparse
 import random
 import json
 from tqdm import tqdm, trange
+import spacy
 import uuid
 import json
 import numpy as np
@@ -35,9 +37,9 @@ import torch
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data.distributed import DistributedSampler
-
+import torch.optim as optim
 import tokenization
-from modeling import BertConfig, BertForMultiNLI
+from modeling import BertConfig, BertForMultiNLI, ESIM, EsimConfig
 from optimization import BERTAdam
 
 
@@ -451,6 +453,8 @@ class QNLIProcessor(DataProcessor):
         for (i, line) in enumerate(lines):
             if i == 0:
                 continue
+            # if i > 1000:
+            #     break
             guid = "%s-%s" % (set_type, i)
             text_a = tokenization.convert_to_unicode(line[1])
             text_b = tokenization.convert_to_unicode(line[2])
@@ -579,13 +583,12 @@ class MulitiNLIProcessor(DataProcessor):
         return random.sample(examples, int(sample_num))
 
 
-def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer, task='none'):
+def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer, task='none', network='bert'):
     """Loads a data file into a list of `InputBatch`s."""
     logger.info("Convert example to feature for {}".format(task))
     label_map = {}
     for (i, label) in enumerate(label_list):
         label_map[label] = i
-
     features = []
     for (ex_index, example) in enumerate(examples):
         tokens_a = tokenizer.tokenize(example.text_a)
@@ -594,66 +597,88 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
         if example.text_b:
             tokens_b = tokenizer.tokenize(example.text_b)
 
-        if tokens_b:
-            # Modifies `tokens_a` and `tokens_b` in place so that the total
-            # length is less than the specified length.
-            # Account for [CLS], [SEP], [SEP] with "- 3"
-            _truncate_seq_pair(tokens_a, tokens_b, max_seq_length - 3)
-        else:
-            # Account for [CLS] and [SEP] with "- 2"
-            if len(tokens_a) > max_seq_length - 2:
-                tokens_a = tokens_a[0:(max_seq_length - 2)]
-
-        # The convention in BERT is:
-        # (a) For sequence pairs:
-        #  tokens:   [CLS] is this jack ##son ##ville ? [SEP] no it is not . [SEP]
-        #  type_ids: 0   0  0    0    0     0       0 0    1  1  1  1   1 1
-        # (b) For single sequences:
-        #  tokens:   [CLS] the dog is hairy . [SEP]
-        #  type_ids: 0   0   0   0  0     0 0
-        #
-        # Where "type_ids" are used to indicate whether this is the first
-        # sequence or the second sequence. The embedding vectors for `type=0` and
-        # `type=1` were learned during pre-training and are added to the wordpiece
-        # embedding vector (and position vector). This is not *strictly* necessary
-        # since the [SEP] token unambigiously separates the sequences, but it makes
-        # it easier for the model to learn the concept of sequences.
-        #
-        # For classification tasks, the first vector (corresponding to [CLS]) is
-        # used as as the "sentence vector". Note that this only makes sense because
-        # the entire model is fine-tuned.
-        tokens = []
-        segment_ids = []
-        tokens.append("[CLS]")
-        segment_ids.append(0)
-        for token in tokens_a:
-            tokens.append(token)
+        if network == 'bert':
+            if tokens_b:
+                # Modifies `tokens_a` and `tokens_b` in place so that the total
+                # length is less than the specified length.
+                # Account for [CLS], [SEP], [SEP] with "- 3"
+                _truncate_seq_pair(tokens_a, tokens_b, max_seq_length - 3)
+            else:
+                # Account for [CLS] and [SEP] with "- 2"
+                if len(tokens_a) > max_seq_length - 2:
+                    tokens_a = tokens_a[0:(max_seq_length - 2)]
+            tokens = []
+            segment_ids = []
+            tokens.append("[CLS]")
             segment_ids.append(0)
-        tokens.append("[SEP]")
-        segment_ids.append(0)
+            for token in tokens_a:
+                tokens.append(token)
+                segment_ids.append(0)
+            tokens.append("[SEP]")
+            segment_ids.append(0)
 
-        if tokens_b:
+            if tokens_b:
+                for token in tokens_b:
+                    tokens.append(token)
+                    segment_ids.append(1)
+                tokens.append("[SEP]")
+                segment_ids.append(1)
+
+            input_ids = tokenizer.convert_tokens_to_ids(tokens)
+
+            # The mask has 1 for real tokens and 0 for padding tokens. Only real
+            # tokens are attended to.
+            input_mask = [1] * len(input_ids)
+
+            # Zero-pad up to the sequence length.
+            while len(input_ids) < max_seq_length:
+                input_ids.append(0)
+                input_mask.append(0)
+                segment_ids.append(0)
+
+            assert len(input_ids) == max_seq_length
+            assert len(input_mask) == max_seq_length
+            assert len(segment_ids) == max_seq_length
+
+        elif network == 'esim':
+            tokens = []
+            segment_ids = []
+            input_mask = []
+            for token in tokens_a:
+                if not len(tokens) < max_seq_length/2:
+                    break
+                tokens.append(token)
+                segment_ids.append(0)
+                input_mask.append(1)
+            while len(tokens) < max_seq_length/2:
+                tokens.append('[PAD]')
+                input_mask.append(0)
+                segment_ids.append(0)
+            assert len(tokens) == max_seq_length/2
+            assert len(input_mask) == max_seq_length/2
+            assert len(segment_ids) == max_seq_length/2
+
             for token in tokens_b:
+                if not len(tokens) < max_seq_length:
+                    break
                 tokens.append(token)
                 segment_ids.append(1)
-            tokens.append("[SEP]")
-            segment_ids.append(1)
+                input_mask.append(1)
+            while len(tokens) < max_seq_length:
+                tokens.append('[PAD]')
+                input_mask.append(0)
+                segment_ids.append(1)
 
-        input_ids = tokenizer.convert_tokens_to_ids(tokens)
+            input_ids = tokenizer.convert_tokens_to_ids(tokens)
 
-        # The mask has 1 for real tokens and 0 for padding tokens. Only real
-        # tokens are attended to.
-        input_mask = [1] * len(input_ids)
-
-        # Zero-pad up to the sequence length.
-        while len(input_ids) < max_seq_length:
-            input_ids.append(0)
-            input_mask.append(0)
-            segment_ids.append(0)
-
-        assert len(input_ids) == max_seq_length
-        assert len(input_mask) == max_seq_length
-        assert len(segment_ids) == max_seq_length
+            if sum(input_mask) == 0:
+                print('Invalid mask!')
+                print(example)
+            assert len(input_ids) == max_seq_length
+            assert len(input_mask) == max_seq_length
+            assert len(segment_ids) == max_seq_length
+        else:
+            raise ValueError('Not support network:{}'.format(network))
 
         try:
             label_id = label_map[example.label]
@@ -701,6 +726,24 @@ def _truncate_seq_pair(tokens_a, tokens_b, max_length):
 def accuracy(out, labels):
     outputs = np.argmax(out, axis=1)
     return np.sum(outputs == labels)
+
+
+def load_embedding(network, word_dict, embedding_file):
+    words = {w for w, index in word_dict.items()}
+    embedding = network.word_embedding.weight.data
+    with open(embedding_file) as f:
+        line = f.readline().rstrip().split(' ')
+        if len(line) != 2:
+            f.seek(0)
+        for line in f:
+            parsed = line.rstrip().split(' ')
+            assert (len(parsed) == embedding.size(1) + 1)
+            w = unicodedata.normalize('NFD', parsed[0])
+            # w = word_dict.normalize(parsed[0])
+            if w in words:
+                vec = torch.Tensor([float(i) for i in parsed[1:]])
+                embedding[word_dict[w]].copy_(vec)
+    return network
 
 
 def do_eval(model, logger, args, device, tr_loss, nb_tr_steps, global_step, processor,
@@ -752,12 +795,16 @@ def main():
     parser = argparse.ArgumentParser()
 
     # Required parameters
+    parser.add_argument("--network",
+                        default='bert',
+                        type=str,
+                        help="Support bert and esim model.")
     parser.add_argument("--data_dir",
                         default=None,
                         type=str,
                         required=True,
                         help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
-    parser.add_argument("--bert_config_file",
+    parser.add_argument("--config_file",
                         default=None,
                         type=str,
                         required=True,
@@ -768,6 +815,10 @@ def main():
                         type=str,
                         required=True,
                         help="The vocabulary file that the BERT model was trained on.")
+    parser.add_argument("--embedding_file",
+                        default=None,
+                        type=str,
+                        help="The Glove embedding file path.")
     parser.add_argument("--output_dir",
                         default=None,
                         type=str,
@@ -813,7 +864,8 @@ def main():
                         default='rr',
                         help="How to sample tasks, other options 'prop', 'sqrt' or 'anneal'")
     parser.add_argument("--dataset_sample",
-                        default=True,
+                        default=False,
+                        action='store_true',
                         help="Whether to sample dataset from the original, 10k by default if it's true."
                              "For MultiNLI, dataset_sample will be a number "
                              "which represents the data num sampled from each dataset.")
@@ -844,6 +896,11 @@ def main():
                         default=3.0,
                         type=float,
                         help="Total number of training epochs to perform.")
+    parser.add_argument("--patience",
+                        default=5,
+                        type=int,
+                        help="Total patience of training, "
+                             "process will stop if best acc do not up when after these training epochs")
     parser.add_argument("--warmup_proportion",
                         default=0.1,
                         type=float,
@@ -902,8 +959,8 @@ def main():
         "wikiqa": 10,
         "multinli": 11
     }
-    # task_num_labels = [3, 2, 2, 2, 2, 2, 3, 2, 2, 2, 2, 2]
-    task_num_labels = [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
+    task_num_labels = [3, 2, 2, 2, 2, 2, 3, 2, 2, 2, 2, 2]
+    # task_num_labels = [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
     device = torch.device("cuda" if torch.cuda.is_available()
                           and not args.no_cuda else "cpu")
     n_gpu = torch.cuda.device_count()
@@ -926,30 +983,41 @@ def main():
         raise ValueError(
             "At least one of `do_train` or `do_eval` must be True.")
 
-    bert_config = BertConfig.from_json_file(args.bert_config_file)
-
-    if args.max_seq_length > bert_config.max_position_embeddings:
-        raise ValueError(
-            "Cannot use sequence length {} because the BERT model was only trained up to sequence length {}".format(
-                args.max_seq_length, bert_config.max_position_embeddings))
-
+    if args.network == 'bert':
+        bert_config = BertConfig.from_json_file(args.config_file)
+        model = BertForMultiNLI(bert_config, task_num_labels)
+        tokenizer = tokenization.FullTokenizer(
+            vocab_file=args.vocab_file, do_lower_case=args.do_lower_case)
+        if args.max_seq_length > bert_config.max_position_embeddings:
+            raise ValueError(
+                "Cannot use sequence length {} because the BERT model was only trained up to sequence length {}".format(
+                    args.max_seq_length, bert_config.max_position_embeddings))
+    elif args.network == 'esim':
+        esim_config = EsimConfig.from_json_file(args.config_file)
+        model = ESIM(esim_config, task_num_labels[task_id_mappings[args.tasks]])
+        tokenizer = tokenization.SpacyTokenizer(
+            vocab_file=args.vocab_file, do_lower_case=args.do_lower_case)
+        if args.embedding_file:
+            model = load_embedding(model, tokenizer.vocab, args.embedding_file)
+    else:
+        raise ValueError("Unsupported nertwork : {}".format(args.network))
     os.makedirs(args.output_dir, exist_ok=True)
 
     task_names = args.tasks.split(',')
     if args.source != None:
         output_dir = os.path.join(args.output_dir,
-                                  args.source+ '_TO_'+ '_'.join(task_names) + '_' +
-                                  os.path.basename(args.bert_config_file).replace('.json', '')+'_' +
+                                  args.source + '_TO_' + '_'.join(task_names) + '_' +
+                                  os.path.basename(args.config_file).replace('.json', '')+'_' +
                                   str(args.learning_rate) + '_' +
                                   uuid.uuid4().hex[:8])
     elif args.dataset_sample:
         output_dir = os.path.join(args.output_dir,
                                   '_'.join(task_names) + '100k_' +
-                                  os.path.basename(args.bert_config_file).replace('.json', ''))
+                                  os.path.basename(args.config_file).replace('.json', ''))
     else:
         output_dir = os.path.join(args.output_dir,
                                   '_'.join(task_names) +
-                                  os.path.basename(args.bert_config_file).replace('.json', '') +
+                                  os.path.basename(args.config_file).replace('.json', '') +
                                   str(args.learning_rate))
 
     tf_writer = SummaryWriter(os.path.join(output_dir, 'log'))
@@ -957,9 +1025,6 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     processor_list = [processors[task_name]() for task_name in task_names]
     label_list = [processor.get_labels() for processor in processor_list]
-
-    tokenizer = tokenization.FullTokenizer(
-        vocab_file=args.vocab_file, do_lower_case=args.do_lower_case)
 
     train_examples = None
     num_train_steps = None
@@ -974,9 +1039,8 @@ def main():
         total_tr = num_train_steps
         steps_per_epoch = int(num_train_steps / args.num_train_epochs)
 
-    if args.h_aug is not 'n/a':
+    if args.network == 'bert' and args.h_aug is not 'n/a':
         bert_config.hidden_size_aug = int(args.h_aug)
-    model = BertForMultiNLI(bert_config, task_num_labels)
 
     if args.init_checkpoint is not None:
         if args.load_all:
@@ -1026,7 +1090,7 @@ def main():
 
     if n_gpu > 1:
         model = torch.nn.DataParallel(model)
-    if args.optim == 'normal':
+    if args.optim == 'normal' and args.network == 'bert':
         no_decay = ['bias', 'gamma', 'beta']
         optimizer_parameters = [
             {'params': [p for n, p in model.named_parameters() if not any(
@@ -1038,6 +1102,9 @@ def main():
                              lr=args.learning_rate,
                              warmup=args.warmup_proportion,
                              t_total=total_tr)
+    elif args.network == 'esim':
+        parameters = [p for p in model.parameters() if p.requires_grad]
+        optimizer = optim.Adamax(parameters, weight_decay=esim_config.weight_decay)
     else:
         no_decay = ['bias', 'gamma', 'beta']
         base = ['attn']
@@ -1067,7 +1134,7 @@ def main():
             eval_examples = processor_list[i].get_dev_examples(
                 args.data_dir + task_names[i], sample=args.dataset_sample)
             eval_features = convert_examples_to_features(
-                eval_examples, label_list[i], args.max_seq_length, tokenizer, task)
+                eval_examples, label_list[i], args.max_seq_length, tokenizer, task, args.network)
             all_input_ids = torch.tensor(
                 [f.input_ids for f in eval_features], dtype=torch.long)
             all_input_mask = torch.tensor(
@@ -1089,7 +1156,7 @@ def main():
         logger.info("  Num Tasks = %d", len(train_examples))
         for i, task in enumerate(task_names):
             train_features = convert_examples_to_features(
-                train_examples[i], label_list[i], args.max_seq_length, tokenizer, task)
+                train_examples[i], label_list[i], args.max_seq_length, tokenizer, task, args.network)
             logger.info("***** training data for %s *****", task)
             logger.info("  Data size = %d", len(train_features))
 
@@ -1110,8 +1177,8 @@ def main():
         total_params = sum(p.numel() for p in model.parameters())
         logger.info("  Num param = {}".format(total_params))
         loaders = [cycle(it) for it in loaders]
-        model.train()
         best_score = 0.
+        best_epoch = 0
         if args.sample == 'sqrt' or args.sample == 'prop':
             probs = num_train_examples
             if args.sample == 'prop':
@@ -1132,7 +1199,7 @@ def main():
                 probs = [p**alpha for p in probs]
                 tot = sum(probs)
                 probs = [p/tot for p in probs]
-
+            model.train()
             for step in tqdm(range(steps_per_epoch)):
                 task_index = np.random.choice(len(task_names), p=probs)
                 task_model_index = task_id_mappings[task_names[task_index]]
@@ -1149,9 +1216,7 @@ def main():
                 tr_loss[task_index] += loss.item() * input_ids.size(0)
                 nb_tr_instances[task_index] += input_ids.size(0)
                 nb_tr_steps[task_index] += 1
-                # if step % 1000 < num_tasks:
-                #     logger.info("Task: {}, Step: {}".format(task_names[task_index], step))
-                #     logger.info("Loss: {}".format(tr_loss[task_index]/nb_tr_instances[task_index]))
+
                 tf_writer.add_scalar('loss/{}'.format(task_names[task_index]),
                                      tr_loss[task_index]/nb_tr_instances[task_index], nb_tr_steps[task_index])
                 if (step + 1) % args.gradient_accumulation_steps == 0:
@@ -1168,8 +1233,12 @@ def main():
             logger.info("Total acc: {}".format(ev_acc))
             if ev_acc > best_score:
                 best_score = ev_acc
+                best_epoch = epoch
                 model_dir = os.path.join(output_dir, "best_model.pth")
                 torch.save(model.state_dict(), model_dir)
+            else:
+                if epoch >= best_epoch+args.patience:
+                    break
             logger.info("Best Total acc: {}".format(best_score))
 
         ev_acc = 0.

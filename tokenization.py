@@ -21,6 +21,7 @@ from __future__ import print_function
 import collections
 import unicodedata
 import six
+import spacy
 
 
 def convert_to_unicode(text):
@@ -96,6 +97,68 @@ def whitespace_tokenize(text):
         return []
     tokens = text.split()
     return tokens
+
+
+class SpacyTokenizer(object):
+    def __init__(self, vocab_file, do_lower_case=True):
+        if vocab_file:
+            self.vocab = self.load_vocab(vocab_file)
+        self.nlp = spacy.load("en_core_web_sm")
+        self.do_lower_case = do_lower_case
+
+    def tokenize(self, text):
+        # We don't treat new lines as tokens.
+        text = text.replace('\n', ' ')
+        clean_text = self._clean_text(text)
+        tokens = self.nlp.tokenizer(clean_text)
+        split_tokens = []
+        for token in tokens:
+            if len(token.text.strip()) == 0:
+                continue
+            token = token.text.strip()
+            if self.do_lower_case:
+                token = token.lower()
+            split_tokens.append(token)
+        return split_tokens
+
+    def _clean_text(self, text):
+        """Performs invalid character removal and whitespace cleanup on text."""
+        output = []
+        for char in text:
+            cp = ord(char)
+            if cp == 0 or cp == 0xfffd or _is_control(char):
+                continue
+            if _is_whitespace(char):
+                output.append(" ")
+            else:
+                output.append(char)
+        return "".join(output)
+
+    def convert_tokens_to_ids(self, tokens):
+        ids = []
+        for token in tokens:
+            if token in self.vocab:
+                ids.append(self.vocab[token])
+            else:
+                ids.append(self.vocab['[UNK]'])
+        return ids
+
+    def load_vocab(self, vocab_file):
+        """Loads a vocabulary file into a dictionary."""
+        vocab = collections.OrderedDict()
+        index = 0
+        with open(vocab_file, "r") as reader:
+            lines = reader.readlines()
+            for line in lines:
+                if len(line.strip()) == 0:
+                    continue
+                token = convert_to_unicode(line.split()[0])
+                if not token:
+                    break
+                token = token.strip()
+                vocab[token] = index
+                index += 1
+        return vocab
 
 
 class FullTokenizer(object):

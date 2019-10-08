@@ -137,6 +137,55 @@ class BertConfig(object):
         return json.dumps(self.to_dict(), indent=2, sort_keys=True) + "\n"
 
 
+class EsimConfig(object):
+    """Configuration class to store the configuration of a `EsimModel`.
+    """
+    def __init__(self,
+                vocab_size,
+                weight_decay=0,
+                grad_clipping=10,
+                length_limit=512,
+                dropout=0.1,
+                hidden_size=100,
+                word_dim=300):
+        self.vocab_size = vocab_size
+        self.hidden_size = hidden_size
+        self.weight_decay = weight_decay
+        self.grad_clipping = grad_clipping
+        self.length_limit = length_limit
+        self.dropout = dropout
+        self.word_dim = word_dim
+
+    @classmethod
+    def from_dict(cls, json_object):
+        """Constructs a `EsimConfig` from a Python dictionary of parameters."""
+        config = EsimConfig(vocab_size=None)
+        for (key, value) in six.iteritems(json_object):
+            config.__dict__[key] = value
+        return config
+
+    @classmethod
+    def from_json_file(cls, json_file):
+        """Constructs a `EsimConfig` from a json file of parameters."""
+        with open(json_file, "r") as reader:
+            text = reader.read()
+        return cls.from_dict(json.loads(text))
+
+    def to_json_file(self, json_file_path):
+        """ Save this instance to a json file."""
+        with open(json_file_path, "w", encoding='utf-8') as writer:
+            writer.write(self.to_json_string())
+
+    def to_dict(self):
+        """Serializes this instance to a Python dictionary."""
+        output = copy.deepcopy(self.__dict__)
+        return output
+
+    def to_json_string(self):
+        """Serializes this instance to a JSON string."""
+        return json.dumps(self.to_dict(), indent=2, sort_keys=True) + "\n"
+
+
 class BERTLayerNorm(nn.Module):
     def __init__(self, config, multi_params=None, variance_epsilon=1e-12):
         """Construct a layernorm module in the TF style (epsilon inside the square root).
@@ -728,3 +777,400 @@ class BertForQuestionAnswering(nn.Module):
             self.bert.load_state_dict(update)
         else:
             self.bert.load_state_dict(torch.load(init_checkpoint, map_location='cpu'))
+
+
+class ESIM(nn.Module):
+    """
+    Implementation of the ESIM model presented in the paper "Enhanced LSTM for
+    Natural Language Inference" by Chen et al.
+    """
+
+    def __init__(self, config, task_num_labels):
+        """
+        Args:
+            word_dict_size: The size of the vocabulary of embeddings in the model.
+            embedding_dim: The dimension of the word embeddings.
+            hidden_size: The size of all the hidden layers in the network.
+            embeddings: A tensor of size (vocab_size, embedding_dim) containing
+                pretrained word embeddings. If None, word embeddings are
+                initialised randomly. Defaults to None.
+            padding_idx: The index of the padding token in the premises and
+                hypotheses passed as input to the model. Defaults to 0.
+            dropout: The dropout rate to use between the layers of the network.
+                A dropout rate of 0 corresponds to using no dropout at all.
+                Defaults to 0.5.
+            num_classes: The number of classes in the output of the network.
+                Defaults to 3.
+        """
+        super(ESIM, self).__init__()
+        self.vocab_size = config.vocab_size
+        self.embedding_dim = config.word_dim
+        self.hidden_size = config.hidden_size
+        self.num_classes = task_num_labels
+        self.dropout = config.dropout
+
+        self.word_embedding = nn.Embedding(self.vocab_size + 1,
+                                           self.embedding_dim,
+                                           padding_idx=0,
+                                           _weight=None)
+
+        if self.dropout:
+            self._rnn_dropout = RNNDropout(p=self.dropout)
+
+        self._encoding = StackedBRNN(self.embedding_dim, self.hidden_size, 1,
+                                     dropout_rate=0, dropout_output=False, rnn_type=nn.LSTM,
+                                     concat_layers=False, padding=False)
+
+        self._attention = SoftmaxAttention()
+
+        self._projection = nn.Sequential(nn.Linear(4*2*self.hidden_size,
+                                                   self.hidden_size),
+                                         nn.ReLU())
+
+        self._composition = StackedBRNN(self.hidden_size, self.hidden_size, 1,
+                                        dropout_rate=0, dropout_output=False, rnn_type=nn.LSTM,
+                                        concat_layers=False, padding=False)
+
+        self._classification = nn.Sequential(nn.Dropout(p=self.dropout),
+                                             nn.Linear(2*4*self.hidden_size,
+                                                       self.hidden_size),
+                                             nn.Tanh(),
+                                             nn.Dropout(p=self.dropout),
+                                             nn.Linear(self.hidden_size,
+                                                       self.num_classes))
+
+        # Initialize all weights and biases in the model.
+        self.apply(_init_esim_weights)
+
+    def forward(self, input_ids, token_type_ids, attention_mask, task_id, labels=None):
+        """
+        Args:
+            premises: A batch of varaible length sequences of word indices
+                representing premises. The batch is assumed to be of size
+                (batch, premises_length).
+            hypothesis: A batch of varaible length sequences of word indices
+                representing hypotheses. The batch is assumed to be of size
+                (batch, hypotheses_length).
+
+        Returns:
+            logits: A tensor of size (batch, num_classes) containing the
+                logits for each output class of the model.
+            probabilities: A tensor of size (batch, num_classes) containing
+                the probabilities of each output class in the model.
+        """
+        input_ids_list = list(torch.split(input_ids, int(attention_mask.size(1)/2), dim=1))
+        premises = input_ids_list[0]
+        hypotheses = input_ids_list[1]
+
+        mask_list = list(torch.split(attention_mask, int(attention_mask.size(1)/2), dim=1))
+        premises_mask = mask_list[0]
+        hypotheses_mask = mask_list[1]
+
+        Amask = torch.ByteTensor(premises.size(0), premises.size(1)).fill_(1)
+        for i, d in enumerate(premises_mask):
+            Amask[i, :sum(d.tolist())].fill_(0)
+        Bmask = torch.ByteTensor(hypotheses.size(0), hypotheses.size(1)).fill_(1)
+        for i, d in enumerate(hypotheses_mask):
+            Bmask[i, :sum(d.tolist())].fill_(0)
+        premises_mask = Amask.cuda()
+        hypotheses_mask = Bmask.cuda()
+
+        embedded_premises = self.word_embedding(premises)
+        embedded_hypotheses = self.word_embedding(hypotheses)
+
+        if self.dropout:
+            embedded_premises = self._rnn_dropout(embedded_premises)
+            embedded_hypotheses = self._rnn_dropout(embedded_hypotheses)
+
+        encoded_premises = self._encoding(embedded_premises,
+                                          premises_mask)
+        encoded_hypotheses = self._encoding(embedded_hypotheses,
+                                            hypotheses_mask)
+
+        attended_premises, attended_hypotheses =\
+            self._attention(encoded_premises, encoded_hypotheses,
+                            premises_mask, hypotheses_mask)
+
+        enhanced_premises = torch.cat([encoded_premises,
+                                       attended_premises,
+                                       encoded_premises - attended_premises,
+                                       encoded_premises * attended_premises],
+                                      dim=-1)
+        enhanced_hypotheses = torch.cat([encoded_hypotheses,
+                                         attended_hypotheses,
+                                         encoded_hypotheses - attended_hypotheses,
+                                         encoded_hypotheses * attended_hypotheses],
+                                        dim=-1)
+
+        projected_premises = self._projection(enhanced_premises)
+        projected_hypotheses = self._projection(enhanced_hypotheses)
+
+        if self.dropout:
+            projected_premises = self._rnn_dropout(projected_premises)
+            projected_hypotheses = self._rnn_dropout(projected_hypotheses)
+
+        v_ai = self._composition(projected_premises, premises_mask)
+        v_bj = self._composition(projected_hypotheses, hypotheses_mask)
+
+        reversed_premises_mask = (1-premises_mask).float()
+        reversed_hypotheses_mask = (1 - hypotheses_mask).float()
+
+        v_a_avg = torch.sum(v_ai * reversed_premises_mask.unsqueeze(2), dim=1)\
+            / torch.sum(reversed_premises_mask, dim=1, keepdim=True)
+        v_b_avg = torch.sum(v_bj * reversed_hypotheses_mask.unsqueeze(2), dim=1)\
+            / torch.sum(reversed_hypotheses_mask, dim=1, keepdim=True)
+
+        v_ai = v_ai.masked_fill(premises_mask.unsqueeze(2), -1e7)
+        v_bj = v_bj.masked_fill(hypotheses_mask.unsqueeze(2), -1e7)
+
+        v_a_max, _ = v_ai.max(dim=1)
+        v_b_max, _ = v_bj.max(dim=1)
+
+        v = torch.cat([v_a_avg, v_a_max, v_b_avg, v_b_max], dim=1)
+
+        logits = self._classification(v)
+        if labels is not None:
+            loss_fct = CrossEntropyLoss()
+            loss = loss_fct(logits, labels)
+            return loss, logits
+        else:
+            return logits
+
+
+def _init_esim_weights(module):
+    """
+    Initialise the weights of the ESIM model.
+    """
+    if isinstance(module, nn.Linear):
+        nn.init.xavier_uniform_(module.weight.data)
+        nn.init.constant_(module.bias.data, 0.0)
+
+    elif isinstance(module, nn.LSTM):
+        nn.init.xavier_uniform_(module.weight_ih_l0.data)
+        nn.init.orthogonal_(module.weight_hh_l0.data)
+        nn.init.constant_(module.bias_ih_l0.data, 0.0)
+        nn.init.constant_(module.bias_hh_l0.data, 0.0)
+        hidden_size = module.bias_hh_l0.data.shape[0] // 4
+        module.bias_hh_l0.data[hidden_size:(2*hidden_size)] = 1.0
+
+        if (module.bidirectional):
+            nn.init.xavier_uniform_(module.weight_ih_l0_reverse.data)
+            nn.init.orthogonal_(module.weight_hh_l0_reverse.data)
+            nn.init.constant_(module.bias_ih_l0_reverse.data, 0.0)
+            nn.init.constant_(module.bias_hh_l0_reverse.data, 0.0)
+            module.bias_hh_l0_reverse.data[hidden_size:(2*hidden_size)] = 1.0
+
+
+class RNNDropout(nn.Dropout):
+    """
+    Dropout layer for the inputs of RNNs.
+
+    Apply the same dropout mask to all the elements of the same sequence in
+    a batch of sequences of size (batch, sequences_length, embedding_dim).
+    """
+
+    def forward(self, sequences_batch):
+        """
+        Apply dropout to the input batch of sequences.
+
+        Args:
+            sequences_batch: A batch of sequences of vectors that will serve
+                as input to an RNN.
+                Tensor of size (batch, sequences_length, emebdding_dim).
+
+        Returns:
+            A new tensor on which dropout has been applied.
+        """
+        ones = sequences_batch.data.new_ones(sequences_batch.shape[0],
+                                             sequences_batch.shape[-1])
+        dropout_mask = nn.functional.dropout(ones, self.p, self.training,
+                                             inplace=False)
+        return dropout_mask.unsqueeze(1) * sequences_batch
+
+
+class StackedBRNN(nn.Module):
+    """Stacked Bi-directional RNNs.
+    Differs from standard PyTorch library in that it has the option to save
+    and concat the hidden states between layers. (i.e. the output hidden size
+    for each sequence input is num_layers * hidden_size).
+    """
+    def __init__(self, input_size, hidden_size, num_layers,
+                 dropout_rate=0, dropout_output=False, rnn_type=nn.LSTM,
+                 concat_layers=False, padding=False):
+        super(StackedBRNN, self).__init__()
+        self.padding = padding
+        self.dropout_output = dropout_output
+        self.dropout_rate = dropout_rate
+        self.num_layers = num_layers
+        self.concat_layers = concat_layers
+        self.rnns = nn.ModuleList()
+        for i in range(num_layers):
+            input_size = input_size if i == 0 else 2 * hidden_size
+            self.rnns.append(rnn_type(input_size, hidden_size,
+                                      num_layers=1,
+                                      bidirectional=True))
+
+    def forward(self, x, x_mask):
+        """Encode either padded or non-padded sequences.
+        Can choose to either handle or ignore variable length sequences.
+        Always handle padding in eval.
+        Args:
+            x: batch * len * hdim
+            x_mask: batch * len (1 for padding, 0 for true)
+        Output:
+            x_encoded: batch * len * hdim_encoded
+        """
+        if x_mask.data.sum() == 0:
+            # No padding necessary.
+            output = self._forward_unpadded(x, x_mask)
+        elif self.padding or not self.training:
+            # Pad if we care or if its during eval.
+            output = self._forward_padded(x, x_mask)
+        else:
+            # We don't care.
+            output = self._forward_unpadded(x, x_mask)
+
+        return output.contiguous()
+
+    def _forward_unpadded(self, x, x_mask):
+        """Faster encoding that ignores any padding."""
+        # Transpose batch and sequence dims
+        x = x.transpose(0, 1)
+
+        # Encode all layers
+        outputs = [x]
+        for i in range(self.num_layers):
+            rnn_input = outputs[-1]
+
+            # Apply dropout to hidden input
+            if self.dropout_rate > 0:
+                rnn_input = F.dropout(rnn_input,
+                                      p=self.dropout_rate,
+                                      training=self.training)
+            # Forward
+            rnn_output = self.rnns[i](rnn_input)[0]
+            outputs.append(rnn_output)
+
+        # Concat hidden layers
+        if self.concat_layers:
+            output = torch.cat(outputs[1:], 2)
+        else:
+            output = outputs[-1]
+
+        # Transpose back
+        output = output.transpose(0, 1)
+
+        # Dropout on output layer
+        if self.dropout_output and self.dropout_rate > 0:
+            output = F.dropout(output,
+                               p=self.dropout_rate,
+                               training=self.training)
+        return output
+
+    def _forward_padded(self, x, x_mask):
+        """Slower (significantly), but more precise, encoding that handles
+        padding.
+        """
+        # Compute sorted sequence lengths
+        lengths = x_mask.data.eq(0).long().sum(1).squeeze()
+        _, idx_sort = torch.sort(lengths, dim=0, descending=True)
+        _, idx_unsort = torch.sort(idx_sort, dim=0)
+        lengths = list(lengths[idx_sort])
+
+        # Sort x
+        x = x.index_select(0, idx_sort)
+
+        # Transpose batch and sequence dims
+        x = x.transpose(0, 1)
+
+        # Pack it up
+        rnn_input = nn.utils.rnn.pack_padded_sequence(x, lengths)
+
+        # Encode all layers
+        outputs = [rnn_input]
+        for i in range(self.num_layers):
+            rnn_input = outputs[-1]
+
+            # Apply dropout to input
+            if self.dropout_rate > 0:
+                dropout_input = F.dropout(rnn_input.data,
+                                          p=self.dropout_rate,
+                                          training=self.training)
+                rnn_input = nn.utils.rnn.PackedSequence(dropout_input,
+                                                        rnn_input.batch_sizes)
+            outputs.append(self.rnns[i](rnn_input)[0])
+
+        # Unpack everything
+        for i, o in enumerate(outputs[1:], 1):
+            outputs[i] = nn.utils.rnn.pad_packed_sequence(o)[0]
+
+        # Concat hidden layers or take final
+        if self.concat_layers:
+            output = torch.cat(outputs[1:], 2)
+        else:
+            output = outputs[-1]
+
+        # Transpose and unsort
+        output = output.transpose(0, 1)
+        output = output.index_select(0, idx_unsort)
+
+        # Pad up to original batch sequence length
+        if output.size(1) != x_mask.size(1):
+            padding = torch.zeros(output.size(0),
+                                  x_mask.size(1) - output.size(1),
+                                  output.size(2)).type(output.data.type())
+            output = torch.cat([output, padding], 1)
+
+        # Dropout on output layer
+        if self.dropout_output and self.dropout_rate > 0:
+            output = F.dropout(output,
+                               p=self.dropout_rate,
+                               training=self.training)
+        return output
+
+
+class SoftmaxAttention(nn.Module):
+    """
+    Attention layer taking premises and hypotheses encoded by an RNN as input
+    and computing the soft attention between their elements.
+
+    The dot product of the encoded vectors in the premises and hypotheses is
+    first computed. The softmax of the result is then used in a weighted sum
+    of the vectors of the premises for each element of the hypotheses, and
+    conversely for the elements of the premises.
+    """
+
+    def forward(self, v1, v2, v1_mask=None, v2_mask=None):
+        """
+        Args:
+            v1: A batch of sequences of vectors representing the
+                premises in some NLI task. The batch is assumed to have the
+                size (batch, sequences, vector_dim).
+            v1_mask: A mask for the sequences in the premise batch, to
+                ignore padding data in the sequences during the computation of
+                the attention.
+            v2: A batch of sequences of vectors representing the
+                hypotheses in some NLI task. The batch is assumed to have the
+                size (batch, sequences, vector_dim).
+            v2_mask: A mask for the sequences in the hypotheses batch,
+                to ignore padding data in the sequences during the computation
+                of the attention.
+
+        Returns:
+            attended_premises: The sequences of attention vectors for the
+                premises in the input batch.
+            attended_hypotheses: The sequences of attention vectors for the
+                hypotheses in the input batch.
+        """
+        similarity_matrix = v1.bmm(v2.transpose(2, 1).contiguous())
+
+        prem_hyp_attn = F.softmax(similarity_matrix.masked_fill(v1_mask.unsqueeze(2), -float('inf')), dim=1)
+        hyp_prem_attn = F.softmax(similarity_matrix.masked_fill(v2_mask.unsqueeze(1), -float('inf')), dim=2)
+
+        attended_premises = hyp_prem_attn.bmm(v2)
+        attended_hypotheses = prem_hyp_attn.transpose(1, 2).bmm(v1)
+
+        attended_premises.masked_fill_(v1_mask.unsqueeze(2), 0)
+        attended_hypotheses.masked_fill_(v2_mask.unsqueeze(2), 0)
+
+        return attended_premises, attended_hypotheses
