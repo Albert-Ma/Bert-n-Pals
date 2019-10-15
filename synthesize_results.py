@@ -21,7 +21,6 @@ parser.add_argument('--parent_dir', default='experiments',
                     help='Directory containing results of experiments')
 
 
-
 def parse_result(filename):
     def _parse(line):
 
@@ -29,16 +28,20 @@ def parse_result(filename):
         m = pat.search(line)
         return m.group(1)
 
-    lines =  open(filename).readlines()
+    lines = open(filename).readlines()
     acc = 0
+    best_acc = 0
+    step = 0
     for i, l in enumerate(lines):
         if 'accuracy' in l:
             acc = _parse(l)
+            if float(acc) > best_acc:
+                best_acc = float(acc)
         if 'train_step' in l:
             step = int(l.replace('train_step = ', ''))
         elif 'global_step' in l:
             step = int(l.replace('global_step =', ''))
-    return acc, step
+    return best_acc, step
 
 
 def aggregate_metrics(parent_dir, metrics):
@@ -50,16 +53,19 @@ def aggregate_metrics(parent_dir, metrics):
         metrics: (dict) subdir -> {'accuracy': ..., ...}
     """
     # Get the metrics for the folder if it has results from an experiment
-    for f in os.listdir(parent_dir):
-        if 'txt' in f:
-            result_file = os.path.join(parent_dir, f)
-            if os.path.isfile(result_file):
-                acc, step = parse_result(result_file)
-                metrics[f] = {'acc': acc, 'step': step}
+    for dir in os.listdir(parent_dir):
+        if 'transfer_mnli' in dir and 'esim' in dir:
+            path = os.path.join(parent_dir, dir)
+            for f in os.listdir(path):
+                if 'txt' in f:
+                    result_file = os.path.join(path, f)
+                    if os.path.isfile(result_file):
+                        acc, step = parse_result(result_file)
+                        metrics[os.path.join(dir, f)] = {'acc': acc, 'step': step}
 
     # Check every subdirectory of parent_dir
     for subdir in os.listdir(parent_dir):
-        if not os.path.isdir(os.path.join(parent_dir, subdir)):
+        if not os.path.isdir(os.path.join(parent_dir, subdir)) or '100k_esim_config' not in subdir:
             continue
         else:
             aggregate_metrics(os.path.join(parent_dir, subdir), metrics)

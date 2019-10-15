@@ -145,8 +145,8 @@ class MsMarcoProcessor(DataProcessor):
             label = tokenization.convert_to_unicode(line[2])
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
-            if sample:
-                examples = random.sample(examples, 100000)
+        if sample:
+            examples = random.sample(examples, 100000)
         return examples
 
 
@@ -230,8 +230,8 @@ class MnliProcessor(DataProcessor):
 
     def get_labels(self):
         """See base class."""
-        # return ["contradiction", "entailment", "neutral"]
-        return ["not_entailment", "entailment"]
+        return ["contradiction", "entailment", "neutral"]
+        # return ["not_entailment", "entailment"]
 
     def _create_examples(self, lines, set_type, sample):
         """Creates examples for the training and dev sets."""
@@ -239,13 +239,15 @@ class MnliProcessor(DataProcessor):
         for (i, line) in enumerate(lines):
             if i == 0:
                 continue
+            # if i > 100:
+            #     break
             guid = "%s-%s" % (set_type,
                               tokenization.convert_to_unicode(line[0]))
             text_a = tokenization.convert_to_unicode(line[8])
             text_b = tokenization.convert_to_unicode(line[9])
             label = tokenization.convert_to_unicode(line[-1])
-            if label != 'entailment':
-                label = 'not_entailment'
+            # if label != 'entailment':
+            #     label = 'not_entailment'
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
         if sample:
@@ -269,8 +271,8 @@ class SNLIProcessor(DataProcessor):
 
     def get_labels(self):
         """See base class."""
-        # return ["contradiction", "entailment", "neutral"]
-        return ["not_entailment", "entailment"]
+        return ["contradiction", "entailment", "neutral"]
+        # return ["not_entailment", "entailment"]
 
     def _create_examples(self, lines, set_type, sample):
         """Creates examples for the training and dev sets."""
@@ -285,8 +287,8 @@ class SNLIProcessor(DataProcessor):
             if label not in ["contradiction", "entailment", "neutral"]:
                 err_cnt += 1
                 continue
-            if label != 'entailment':
-                label = 'not_entailment'
+            # if label != 'entailment':
+            #     label = 'not_entailment'
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
         print('SNLI dataset has {} error!'.format(err_cnt))
@@ -423,6 +425,8 @@ class QQPProcessor(DataProcessor):
             text_a = tokenization.convert_to_unicode(line[3])
             text_b = tokenization.convert_to_unicode(line[4])
             label = tokenization.convert_to_unicode(line[-1])
+            if len(text_a.strip()) == 0 or len(text_b.strip()) == 0:
+                continue
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
         if sample:
@@ -829,7 +833,11 @@ def main():
     parser.add_argument("--load_all",
                         default=False,
                         action='store_true',
-                        help="Whether to load all parameter or only for bert part.")
+                        help="Whether to load all parameter.")
+    parser.add_argument("--load_partial",
+                        default=False,
+                        action='store_true',
+                        help="Whether to load model part except classfier part.")
     parser.add_argument("--init_checkpoint",
                         default=None,
                         type=str,
@@ -838,7 +846,6 @@ def main():
                         default=None,
                         type=str,
                         help="Start point for finetune.")
-
     parser.add_argument("--do_lower_case",
                         default=False,
                         action='store_true',
@@ -864,9 +871,9 @@ def main():
                         default='rr',
                         help="How to sample tasks, other options 'prop', 'sqrt' or 'anneal'")
     parser.add_argument("--dataset_sample",
-                        default=False,
-                        action='store_true',
-                        help="Whether to sample dataset from the original, 10k by default if it's true."
+                        default=0,
+                        type=int,
+                        help="Whether to sample dataset from the original, 10k by default if it's 1."
                              "For MultiNLI, dataset_sample will be a number "
                              "which represents the data num sampled from each dataset.")
     parser.add_argument("--do_eval",
@@ -897,7 +904,7 @@ def main():
                         type=float,
                         help="Total number of training epochs to perform.")
     parser.add_argument("--patience",
-                        default=5,
+                        default=3,
                         type=int,
                         help="Total patience of training, "
                              "process will stop if best acc do not up when after these training epochs")
@@ -1006,7 +1013,7 @@ def main():
     task_names = args.tasks.split(',')
     if args.source != None:
         output_dir = os.path.join(args.output_dir,
-                                  args.source + '_TO_' + '_'.join(task_names) + '_' +
+                                  'transfer_'+args.source + '_TO_' + '_'.join(task_names) + '_' +
                                   os.path.basename(args.config_file).replace('.json', '')+'_' +
                                   str(args.learning_rate) + '_' +
                                   uuid.uuid4().hex[:8])
@@ -1061,24 +1068,40 @@ def main():
                 else:
                     update[n] = partial[n]
             model.bert.load_state_dict(update)
-        else:
-            # Only initialized bert part params which has no 'bert' prefix
-            bert_partial = torch.load(args.init_checkpoint, map_location='cpu')
-            bert_prefix = False
-            if 'bert.embeddings.word_embeddings.weight' in bert_partial:
-                bert_prefix = True
-            print('Whether model dict have bert prefix:{}'.format(bert_prefix))
-            model_dict = model.state_dict()
-            update = {}
-            for n, p in model_dict.items():
-                if 'bert' in n:
-                    if bert_prefix:
-                        update[n[5:]] = bert_partial[n]
-                    else:
-                        update[n[5:]] = bert_partial[n[5:]]
-            missing_keys, unexpected_keys = model.bert.load_state_dict(update, strict=False)
+        elif args.load_partial:
+            if args.network == 'bert':
+                # Only initialized bert part params which has no 'bert' prefix
+                bert_partial = torch.load(args.init_checkpoint, map_location='cpu')
+                bert_prefix = False
+                if 'bert.embeddings.word_embeddings.weight' in bert_partial:
+                    bert_prefix = True
+                print('Whether model dict have bert prefix:{}'.format(bert_prefix))
+                model_dict = model.state_dict()
+                update = {}
+                for n, p in model_dict.items():
+                    if 'bert' in n:
+                        if bert_prefix:
+                            update[n[5:]] = bert_partial[n]
+                        else:
+                            update[n[5:]] = bert_partial[n[5:]]
+                missing_keys, unexpected_keys = model.bert.load_state_dict(update, strict=False)
+
+            elif args.network == 'esim':
+                esim_partial = torch.load(args.init_checkpoint, map_location='cpu')
+                model_dict = model.state_dict()
+                update = {}
+                for n, p in model_dict.items():
+                    if '_classification' not in n:
+                        update[n] = esim_partial[n]
+                missing_keys, unexpected_keys = model.load_state_dict(update, strict=False)
+            else:
+                raise ValueError("Unsupported nertwork : {}".format(args.network))
+
             logger.info('missing keys: {}'.format(missing_keys))
             logger.info('unexpected keys: {}'.format(unexpected_keys))
+
+        else:
+            raise ValueError("Invalid  argument")
 
     if args.freeze:
         for n, p in model.bert.named_parameters():
