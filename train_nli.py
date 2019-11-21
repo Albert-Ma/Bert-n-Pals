@@ -634,7 +634,7 @@ def do_eval(model, logger, args, device, tr_loss, nb_tr_steps, global_step, proc
 
     output_eval_file = os.path.join(
         output_dir, "{}_eval_results.txt".format(task_name))
-    with open(output_eval_file, "w") as writer:
+    with open(output_eval_file, "a+") as writer:
         logger.info("***** {} Eval results *****".format(task_name))
         for key in sorted(result.keys()):
             logger.info("  %s = %s", key, str(result[key]))
@@ -835,7 +835,18 @@ def main():
             "Cannot use sequence length {} because the BERT model was only trained up to sequence length {}".format(
                 args.max_seq_length, bert_config.max_position_embeddings))
 
-    
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    task_names = args.tasks.split(',')
+    if args.source != None:
+        output_dir = os.path.join(args.output_dir,
+                                  args.source+ '_TO_'+ '_'.join(task_names) + '_' + os.path.basename(args.bert_config_file).replace('.json', '')+'_'+ uuid.uuid4().hex[:8])
+    else:
+        output_dir = os.path.join(args.output_dir,
+                                  '_'.join(task_names) + '_' + os.path.basename(args.bert_config_file).replace('.json',''))
+    tf_writer = SummaryWriter(os.path.join(output_dir, 'log'))
+    json.dump(vars(args), open(os.path.join(output_dir, 'run_config.json'), 'w'), indent=2)
+    os.makedirs(output_dir, exist_ok=True)
     processor_list = [processors[task_name]() for task_name in task_names]
     label_list = [processor.get_labels() for processor in processor_list]
 
@@ -861,7 +872,7 @@ def main():
 
     if args.init_checkpoint is not None:
         if args.load_all:
-            missing_keys, unexpected_keys = model.load_state_dict(torch.load(args.init_checkpoint, map_location='cpu'),strict=False)
+            missing_keys, unexpected_keys = model.load_state_dict(torch.load(args.init_checkpoint, map_location='cpu'), strict=False)
             logger.info('missing keys: {}'.format(missing_keys))
             logger.info('unexpected keys: {}'.format(unexpected_keys))
         elif args.multi:
@@ -881,11 +892,16 @@ def main():
         else:
             model.bert.load_state_dict(torch.load(
                 args.init_checkpoint, map_location='cpu'))
-    
-    
-    tuned, non_tuned, total = 0, 0, 0
-    for n, p in model.bert.named_parameters():
-        total += p.numel()
+            # Only initialized bert part params which has no 'bert' prefix
+            bert_partial = torch.load(args.init_checkpoint, map_location='cpu')
+            model_dict = model.state_dict()
+            update = {}
+            for n, p in model_dict.items():
+                if 'bert' in n:
+                    update[n[5:]] = bert_partial[n[5:]]
+            missing_keys, unexpected_keys = model.bert.load_state_dict(update, strict=False)
+            logger.info('missing keys: {}'.format(missing_keys))
+            logger.info('unexpected keys: {}'.format(unexpected_keys))
 
     if args.freeze:
         for n, p in model.bert.named_parameters():
@@ -907,14 +923,14 @@ def main():
         for n, p in model.bert.named_parameters():
             logger.info('{}\t{}'.format(p.requires_grad,n))
 
-    
+
     if args.freeze_regex in [str(x) for x in range(11)]:
         logger.info('Tune some layer!')
         freeze_by_layer(args.freeze_regex)
 
     if args.freeze_regex == 'all':
         logger.info('Tune all bias parameters!')
-        for  n, p in model.bert.named_parameters(): 
+        for  n, p in model.bert.named_parameters():
             if "bias" not in n:
                 p.requires_grad = False
                 non_tuned += p.numel()
@@ -923,16 +939,16 @@ def main():
 
     if args.freeze_regex == 'attention_bias':
         logger.info('Tune all attetnion bias parameters!')
-        for  n, p in model.bert.named_parameters(): 
+        for  n, p in model.bert.named_parameters():
             if "bias" in n and 'attention' in n:
                 tuned += p.numel()
             else:
                 p.requires_grad = False
                 non_tuned += p.numel()
-                
+
     if args.freeze_regex == 'linear_bias':
         logger.info('Tune all linear bias parameters!')
-        for  n, p in model.bert.named_parameters(): 
+        for  n, p in model.bert.named_parameters():
             if "bias" in n and ('output' in n or 'intermediate' in n):
                 tuned += p.numel()
             else:
@@ -941,28 +957,28 @@ def main():
 
     if args.freeze_regex == 'layer_norm':
         logger.info('Tune all layer norm bias parameters!')
-        for  n, p in model.bert.named_parameters(): 
+        for  n, p in model.bert.named_parameters():
             if 'gamma' in n or 'beta' in n:
                 tuned += p.numel()
             else:
                 p.requires_grad = False
                 non_tuned += p.numel()
-    
+
     if args.freeze_regex == 'attn_self':
         logger.info('Tune all layer attention parameters!')
-        for  n, p in model.bert.named_parameters(): 
+        for  n, p in model.bert.named_parameters():
             if 'attention' in n:
                 tuned += p.numel()
             else:
                 p.requires_grad = False
                 non_tuned += p.numel()
 
-    
+
     for n, p in model.bert.named_parameters():
         logger.info('{}\t{}'.format(p.requires_grad,n))
-    
+
     logger.info('tuned:{}({}), not tuned: {}'.format(tuned, round(tuned/total, 6), non_tuned))
-    
+
     model.to(device)
     if n_gpu > 1:
         model = torch.nn.DataParallel(model)
