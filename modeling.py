@@ -687,13 +687,14 @@ class BertForQuestionAnswering(nn.Module):
         self.apply(init_weights)
 
     def forward(self, input_ids, token_type_ids, attention_mask, task_id=None, start_positions=None, end_positions=None):
-        all_encoder_layers, _ = self.berppt(input_ids, token_type_ids, attention_mask, task_id)
+        all_encoder_layers, _ = self.bert(input_ids, token_type_ids, attention_mask, task_id)
         sequence_output = all_encoder_layers[-1]
         logits = self.qa_outputs(sequence_output)
         start_logits, end_logits = logits.split(1, dim=-1)
         start_logits = start_logits.squeeze(-1)
         end_logits = end_logits.squeeze(-1)
-
+        #import ipdb
+        #ipdb.set_trace()
         if start_positions is not None and end_positions is not None:
             # If we are on multi-GPU, split add a dimension - if not this is a no-op
             start_positions = start_positions.squeeze(-1)
