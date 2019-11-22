@@ -25,11 +25,11 @@ import math
 import os
 import uuid
 import random
-import sys
 from io import open
 from itertools import cycle
 import gzip
 
+import pickle
 import numpy as np
 import torch
 from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
@@ -44,11 +44,6 @@ from tokenization import (BasicTokenizer,
                           FullTokenizer,
                           whitespace_tokenize)
 
-
-if sys.version_info[0] == 2:
-    import cPickle as pickle
-else:
-    import pickle
 
 logger = logging.getLogger(__name__)
 
@@ -154,17 +149,17 @@ class MRQAProcessor:
             self.train_file_name = 'SQuAD.jsonl.gz'
             self.dev_file_name = 'dev_SQuAD.jsonl.gz'
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, topk=10000000):
         """Load train."""
         self.train_file = os.path.join(data_dir, self.train_file_name)
-        return self._create_examples(self.train_file)
+        return self._create_examples(self.train_file, topk=topk)
 
     def get_dev_examples(self, data_dir):
         """Load dev."""
         self.dev_file = os.path.join(data_dir, self.dev_file_name)
         return self._create_examples(self.dev_file)
 
-    def _create_examples(self, input_file, is_training=True):
+    def _create_examples(self, input_file, is_training=True, topk=10000000):
         """Read a MRQA json file into a list of MRQAExample."""
         with gzip.GzipFile(input_file, 'r') as reader:
             # skip header
@@ -224,6 +219,8 @@ class MRQAProcessor:
                     start_position=start_position,
                     end_position=end_position)
                 examples.append(example)
+            if len(examples) >= topk:
+                    break
         logger.info('Num avg answers: {}'.format(num_answers / len(examples)))
         return examples
 
@@ -327,7 +324,7 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
     """Load a data file into a list of `InputBatch`s."""
     unique_id = 1000000000
     features = []
-    for (example_index, example) in enumerate(examples):
+    for (example_index, example) in enumerate(tqdm(examples, desc='convert data')):
         query_tokens = tokenizer.tokenize(example.question_text)
 
         if len(query_tokens) > max_query_length:
@@ -439,7 +436,7 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
             if is_training and example.is_impossible:
                 start_position = 0
                 end_position = 0
-            if example_index < 20:
+            if example_index < 0:
                 logger.info("*** Example ***")
                 logger.info("unique_id: %s" % (unique_id))
                 logger.info("example_index: %s" % (example_index))
@@ -965,6 +962,10 @@ def main():
                         type=int,
                         default=42,
                         help="random seed for initialization")
+    parser.add_argument('--topk',
+                        type=int,
+                        default=100000000,
+                        help="Number of training examples.")
     parser.add_argument('--gradient_accumulation_steps',
                         type=int,
                         default=1,
@@ -992,7 +993,7 @@ def main():
         ptvsd.enable_attach(
             address=(args.server_ip, args.server_port), redirect_output=True)
         ptvsd.wait_for_attach()
-    if args.train:
+    if args.do_train:
         output_dir = os.path.join(args.output_dir,
                                   args.source + '_TO_' + '_'.join(task_names) + '_' +
                                   os.path.basename(args.config_file).replace('.json', '') +
@@ -1050,20 +1051,9 @@ def main():
     tokenizer = FullTokenizer(
         args.vocab_file, do_lower_case=args.do_lower_case)
 
-    processor_list = [processors[task_name](
-        task_name) for task_name in task_names]
 
     train_examples = None
     num_train_optimization_steps = None
-    if args.do_train:
-        train_examples = [processor.get_train_examples(
-            args.data_dir) for processor, data_dir in zip(processor_list, task_names)]
-        num_train_examples = [len(tr) for tr in train_examples]
-        total_train_examples = sum(num_train_examples)
-        num_train_optimization_steps = int(
-            total_train_examples / args.train_batch_size / args.gradient_accumulation_steps) * args.num_train_epochs
-        steps_per_epoch = int(
-            num_train_optimization_steps / args.num_train_epochs)
     # Prepare model
     config = BertConfig.from_json_file(args.config_file)
     if args.h_aug != 'n/a':
@@ -1172,16 +1162,16 @@ def main():
             nd in n for nd in no_decay)], 'weight_decay': 0.0}
     ]
 
-    optimizer = BERTAdam(optimizer_grouped_parameters,
-                         lr=args.learning_rate,
-                         warmup=args.warmup_proportion,
-                         t_total=num_train_optimization_steps)
 
     global_step = 0
+    total_instance = 0
+    num_train_examples = []
     if args.do_train:
         loaders = []
         for i, task in enumerate(task_names):
-            cached_train_features_file = processor_list[i].train_file + '_{0}_{1}_{2}'.format(
+            processor = processors[task](task)
+            train_examples = processor.get_train_examples(args.data_dir, args.topk)
+            cached_train_features_file = processor.train_file + '_{0}_{1}_{2}'.format(
                 str(args.max_seq_length), str(args.doc_stride), str(args.max_query_length))
             train_features = None
             try:
@@ -1190,7 +1180,7 @@ def main():
             except Exception as e:
                 logger.info(e)
                 train_features = convert_examples_to_features(
-                    examples=train_examples[i],
+                    examples=train_examples,
                     tokenizer=tokenizer,
                     max_seq_length=args.max_seq_length,
                     doc_stride=args.doc_stride,
@@ -1203,11 +1193,11 @@ def main():
 
             logger.info("***** Running training *****")
             logger.info("  task name = %s" % task)
-            logger.info("  Num orig examples = %d", len(train_examples[i]))
+            logger.info("  Num orig examples = %d", len(train_examples))
             logger.info("  Num split examples = %d", len(train_features))
             logger.info("  Batch size = %d", args.train_batch_size)
-            logger.info("  Num steps = %d", num_train_optimization_steps)
-
+            total_instance += len(train_features)
+            num_train_examples.append(len(train_features))
             all_input_ids = torch.tensor(
                 [f.input_ids for f in train_features], dtype=torch.long)
             all_input_mask = torch.tensor(
@@ -1225,6 +1215,18 @@ def main():
             train_sampler = RandomSampler(train_data)
             loaders.append(DataLoader(train_data, sampler=train_sampler,
                                       batch_size=args.train_batch_size, drop_last=True))
+
+        num_train_optimization_steps = int(
+            total_instance / args.train_batch_size / args.gradient_accumulation_steps) * args.num_train_epochs
+        steps_per_epoch = int(
+            num_train_optimization_steps / args.num_train_epochs)
+
+        optimizer = BERTAdam(optimizer_grouped_parameters,
+                         lr=args.learning_rate,
+                         warmup=args.warmup_proportion,
+                         t_total=num_train_optimization_steps)
+        logger.info('total train instance = {}'.format(total_instance))
+        logger.info(num_train_examples)
         loaders = [cycle(it) for it in loaders]
         model.train()
         if args.sample == 'sqrt' or args.sample == 'prop':
@@ -1301,7 +1303,7 @@ def main():
     if args.do_predict:
         eval_loaders = []
         for i, task in enumerate(task_names):
-            eval_examples = processor_list[i].get_dev_examples(args.data_dir)
+            eval_examples = processors[task](task).get_dev_examples(args.data_dir)
             eval_features = convert_examples_to_features(
                 examples=eval_examples,
                 tokenizer=tokenizer,
@@ -1334,10 +1336,8 @@ def main():
             eval_loaders.append(DataLoader(
                 eval_data, sampler=eval_sampler, batch_size=args.predict_batch_size))
 
-        model.eval()
-        all_results = []
-        logger.info("Start evaluating")
-        for i, task in enumerate(task_names):
+            model.eval()
+            all_results = []
             logger.info('Prediction on %s', task)
             for input_ids, input_mask, segment_ids, task_ids, example_indices in tqdm(eval_loaders[i], desc="Evaluating"):
                 input_ids = input_ids.to(device)
