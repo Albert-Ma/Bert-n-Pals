@@ -61,6 +61,8 @@ class BertConfig(object):
                 bert_lay_top=False,
                 num_tasks=1,
                 extra_dim=None,
+                adapter=None,
+                adapter_size=0,
                 hidden_size_aug=204):
         """Constructs BertConfig.
 
@@ -106,6 +108,7 @@ class BertConfig(object):
         self.bert_lay_top = bert_lay_top
         self.lhuc = lhuc
         self.num_tasks=num_tasks
+        self.adapter = adapter
 
     @classmethod
     def from_dict(cls, json_object):
@@ -258,25 +261,44 @@ class BERTMultSelfOutput(nn.Module):
         return hidden_states
 
 
+class AdapterLayer(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.adapter_linear1 = nn.Linear(config.hidden_size, config.adapter_size)
+        self.gelu = gelu
+        self.adapter_linear2 = nn.Linear(config.adapter_size, config.hidden_size)
+    def forward(self, input_tensor):
+        net = self.adapter_linear1(input_tensor)
+        net = self.gelu(net)
+        net = self.adapter_linear2(net)
+        return net + input_tensor
+
+
 class BERTSelfOutput(nn.Module):
     def __init__(self, config, multi_params=None, houlsby=False):
         super(BERTSelfOutput, self).__init__()
         if houlsby:
             multi = BERTLowRank(config)
-            self.multi_layers = nn.ModuleList([copy.deepcopy(multi) for _ in range(config.num_tasks)])    
+            self.multi_layers = nn.ModuleList([copy.deepcopy(multi) for _ in range(config.num_tasks)])
         if multi_params is not None:
             self.dense = nn.Linear(config.hidden_size_aug, config.hidden_size_aug)
         else:
             self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        if config.adapter == 'adapter_google':
+            adapter =  AdapterLayer(config)
+            self.adapters = nn.ModuleList([copy.deepcopy(adapter) for _ in range(config.num_tasks)])
         self.LayerNorm = BERTLayerNorm(config, multi_params)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.houlsby = houlsby
+        self.adapter=config.adapter
 
     def forward(self, hidden_states, input_tensor, attention_mask=None, i=0):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
         if self.houlsby:
             hidden_states = hidden_states + self.multi_layers[i](hidden_states, attention_mask)
+        if self.adapter == 'adapter_google':
+            hidden_states = self.adapters[i](hidden_states)
         hidden_states = self.LayerNorm(hidden_states + input_tensor)
         return hidden_states
 
@@ -306,7 +328,7 @@ class BERTPals(nn.Module):
 
     def forward(self, hidden_states, attention_mask=None):
         hidden_states_aug = self.aug_dense(hidden_states)
-        hidden_states_aug = self.attn(hidden_states_aug, attention_mask) 
+        hidden_states_aug = self.attn(hidden_states_aug, attention_mask)
         hidden_states = self.aug_dense2(hidden_states_aug)
         hidden_states = self.hidden_act_fn(hidden_states)
         return hidden_states
@@ -366,14 +388,20 @@ class BERTOutput(nn.Module):
                 multi = BERTPals(config)
             else:
                 multi = BERTLowRank(config)
-            self.multi_layers = nn.ModuleList([copy.deepcopy(multi) for _ in range(config.num_tasks)])    
+            self.multi_layers = nn.ModuleList([copy.deepcopy(multi) for _ in range(config.num_tasks)])
+        if config.adapter == 'adapter_google':
+            adapter = AdapterLayer(config)
+            self.adapters = nn.ModuleList([copy.deepcopy(adapter) for _ in range(config.num_tasks)])
         self.houlsby = houlsby
+        self.adapter = config.adapter
 
     def forward(self, hidden_states, input_tensor, attention_mask=None, i=0):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
         if self.houlsby:
             hidden_states = hidden_states + self.multi_layers[i](input_tensor, attention_mask)
+        if self.adapter == 'adapter_google':
+            hidden_states = self.adapters[i](hidden_states)
         hidden_states = self.LayerNorm(hidden_states + input_tensor)
         return hidden_states
 
@@ -392,9 +420,9 @@ class BERTLayer(nn.Module):
                 multi = BERTPals(config)
             else:
                 multi = BERTLowRank(config)
-            self.multi_layers = nn.ModuleList([copy.deepcopy(multi) for _ in range(config.num_tasks)])    
+            self.multi_layers = nn.ModuleList([copy.deepcopy(multi) for _ in range(config.num_tasks)])
         self.mult = mult
-        self.lhuc = config.lhuc        
+        self.lhuc = config.lhuc
         self.houlsby = houlsby
 
     def forward(self, hidden_states, attention_mask, i=0):
@@ -404,7 +432,7 @@ class BERTLayer(nn.Module):
             layer_output = self.output(intermediate_output, attention_output)
             layer_output = self.multi_lhuc[i](layer_output)
         elif self.mult:
-            extra = self.multi_layers[i](hidden_states, attention_mask)        
+            extra = self.multi_layers[i](hidden_states, attention_mask)
             if self.lhuc:
                 extra = self.multi_lhuc[i](extra)
             layer_output = self.output(intermediate_output, attention_output + extra)
@@ -422,11 +450,11 @@ class BERTEncoder(nn.Module):
         if config.houlsby:
             # Adjust line below to add PALs etc. to different layers. True means add a PAL.
             self.multis = [True if i < 999 else False for i in range(config.num_hidden_layers)]
-            self.layer = nn.ModuleList([BERTLayer(config, houlsby=mult) for mult in self.multis])    
+            self.layer = nn.ModuleList([BERTLayer(config, houlsby=mult) for mult in self.multis])
         elif config.mult:
             # Adjust line below to add PALs etc. to different layers. True means add a PAL.
             self.multis = [True if i < 999 else False for i in range(config.num_hidden_layers)]
-            self.layer = nn.ModuleList([BERTLayer(config, mult=mult) for mult in self.multis])    
+            self.layer = nn.ModuleList([BERTLayer(config, mult=mult) for mult in self.multis])
         else:
             layer = BERTLayer(config)
             self.layer = nn.ModuleList([copy.deepcopy(layer) for _ in range(config.num_hidden_layers)])
@@ -489,7 +517,7 @@ class BERTEncoder(nn.Module):
 class BERTPooler(nn.Module):
     def __init__(self, config):
         super(BERTPooler, self).__init__()
-        
+
         dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.activation = nn.Tanh()
         self.pool = False
@@ -579,7 +607,7 @@ class BertForMultiTask(nn.Module):
         super(BertForMultiTask, self).__init__()
         self.bert = BertModel(config)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.classifier = nn.ModuleList([nn.Linear(config.hidden_size, num_labels) 
+        self.classifier = nn.ModuleList([nn.Linear(config.hidden_size, num_labels)
                                          for i, num_labels in enumerate(tasks)])
         def init_weights(module):
             if isinstance(module, (nn.Linear, nn.Embedding)):
@@ -621,7 +649,7 @@ class BertForMultiNLI(nn.Module):
         super(BertForMultiNLI, self).__init__()
         self.bert = BertModel(config)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.classifier = nn.ModuleList([nn.Linear(config.hidden_size, num_labels) 
+        self.classifier = nn.ModuleList([nn.Linear(config.hidden_size, num_labels)
                                          for i, num_labels in enumerate(task_num_labels)])
         def init_weights(module):
             if isinstance(module, (nn.Linear, nn.Embedding)):
@@ -711,8 +739,8 @@ class BertForQuestionAnswering(nn.Module):
             return total_loss
         else:
             return start_logits, end_logits
-    
-    def load_pretained(self, init_checkpoint, patch=False):
+
+    def load_pretrained(self, init_checkpoint, patch=False, transfer=False):
         if patch:
             partial = torch.load(init_checkpoint, map_location='cpu')
             model_dict = self.bert.state_dict()
@@ -727,5 +755,13 @@ class BertForQuestionAnswering(nn.Module):
                 else:
                     update[n] = partial[n]
             self.bert.load_state_dict(update)
+        if transfer:
+            print('Load all parameters')
+            missing_keys, unexpected_keys = self.load_state_dict(torch.load(init_checkpoint, map_location='cpu'),strict=False)
+            print("missing keys: {}".format(missing_keys))
+            print('unexpected keys: {}'.format(unexpected_keys))
         else:
-            self.bert.load_state_dict(torch.load(init_checkpoint, map_location='cpu'))
+            print('Load Bert parameters')
+            missing_keys, unexpected_keys = self.bert.load_state_dict(torch.load(init_checkpoint, map_location='cpu'),strict=False)
+            print("missing keys: {}".format(missing_keys))
+            print('unexpected keys: {}'.format(unexpected_keys))
