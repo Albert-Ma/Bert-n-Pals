@@ -895,7 +895,7 @@ def main():
                         type=str,
                         help="Which set of tasks to train on.")
     parser.add_argument("--sample",
-                        default='sqrt',
+                        default='uniform',
                         help="How to sample tasks, other options 'prop', 'sqrt' or 'anneal'")
     parser.add_argument("--source",
                         default=None,
@@ -920,6 +920,8 @@ def main():
                         help="The output directory where the model checkpoints and predictions will be written.")
     parser.add_argument("--patch", action='store_true',
                         help="Whether to load patch part parameters.")
+    parser.add_argument("--transfer", action='store_true',
+                        help="Whether to load patch part parameters.")
     # Other parameters
     parser.add_argument("--data_dir", default=None, type=str,
                         help="Dataset path.")
@@ -935,9 +937,9 @@ def main():
                         help="Whether to run training.")
     parser.add_argument("--do_predict", action='store_true',
                         help="Whether to run eval on the dev set.")
-    parser.add_argument("--train_batch_size", default=8,
+    parser.add_argument("--train_batch_size", default=16,
                         type=int, help="Total batch size for training.")
-    parser.add_argument("--predict_batch_size", default=8,
+    parser.add_argument("--predict_batch_size", default=24,
                         type=int, help="Total batch size for predictions.")
     parser.add_argument("--learning_rate", default=5e-5,
                         type=float, help="The initial learning rate for Adam.")
@@ -1061,7 +1063,7 @@ def main():
 
     model = BertForQuestionAnswering(config)
 
-    model.load_pretained(args.init_checkpoint, patch=args.patch)
+    model.load_pretrained(args.init_checkpoint, patch=args.patch, transfer=args.transfer)
     tuned, non_tuned, total = 0, 0, 0
     for n, p in model.bert.named_parameters():
         total += p.numel()
@@ -1162,7 +1164,6 @@ def main():
             nd in n for nd in no_decay)], 'weight_decay': 0.0}
     ]
 
-
     global_step = 0
     total_instance = 0
     num_train_examples = []
@@ -1171,8 +1172,8 @@ def main():
         for i, task in enumerate(task_names):
             processor = processors[task](task)
             train_examples = processor.get_train_examples(args.data_dir, args.topk)
-            cached_train_features_file = processor.train_file + '_{0}_{1}_{2}'.format(
-                str(args.max_seq_length), str(args.doc_stride), str(args.max_query_length))
+            cached_train_features_file = processor.train_file + '_{0}_{1}_{2}_{3}'.format(
+                str(args.max_seq_length), str(args.doc_stride), str(args.max_query_length), str(args.topk))
             train_features = None
             try:
                 with open(cached_train_features_file, "rb") as reader:
@@ -1190,7 +1191,7 @@ def main():
                     "  Saving train features into cached file %s", cached_train_features_file)
                 with open(cached_train_features_file, "wb") as writer:
                     pickle.dump(train_features, writer)
-
+            train_features = train_features[:args.topk]
             logger.info("***** Running training *****")
             logger.info("  task name = %s" % task)
             logger.info("  Num orig examples = %d", len(train_examples))
@@ -1229,8 +1230,10 @@ def main():
         logger.info(num_train_examples)
         loaders = [cycle(it) for it in loaders]
         model.train()
-        if args.sample == 'sqrt' or args.sample == 'prop':
+        if args.sample == 'sqrt' or args.sample == 'prop' or args.sample == 'uniform':
             probs = num_train_examples
+            if args.sample == 'uniform':
+                alpha = 0
             if args.sample == 'prop':
                 alpha = 1.
             if args.sample == 'sqrt':
@@ -1278,6 +1281,82 @@ def main():
                 tf_writer.add_scalar('loss/{}'.format(task_names[task_index]),
                                      tr_loss[task_index] / nb_tr_instances[task_index], nb_tr_steps[task_index])
 
+            #output_model_file = os.path.join(output_dir, WEIGHTS_NAME + '.' + str(epoch))
+            #output_config_file = os.path.join(output_dir, CONFIG_NAME + '.' + str(epoch))
+            #model_to_save = model.module if hasattr(
+            #    model, 'module') else model  # Only save the model it-self
+            #torch.save(model_to_save.state_dict(), output_model_file)
+            #config.to_json_file(output_config_file)
+
+            if epoch == args.num_train_epochs -1 :
+                continue
+
+            for i, task in enumerate(task_names):
+                eval_examples = processors[task](task).get_dev_examples(args.data_dir)
+                eval_features = convert_examples_to_features(
+                    examples=eval_examples,
+                    tokenizer=tokenizer,
+                    max_seq_length=args.max_seq_length,
+                    doc_stride=args.doc_stride,
+                    max_query_length=args.max_query_length,
+                    is_training=False)
+
+                logger.info("***** Running predictions *****")
+                logger.info(" task name = %s", task)
+                logger.info("  Num orig examples = %d", len(eval_examples))
+                logger.info("  Num split examples = %d", len(eval_features))
+                logger.info("  Batch size = %d", args.predict_batch_size)
+
+                all_input_ids = torch.tensor(
+                    [f.input_ids for f in eval_features], dtype=torch.long)
+                all_input_mask = torch.tensor(
+                    [f.input_mask for f in eval_features], dtype=torch.long)
+                all_segment_ids = torch.tensor(
+                    [f.segment_ids for f in eval_features], dtype=torch.long)
+                all_task_ids = torch.tensor(
+                    [task_id_mappings[task] for f in eval_features], dtype=torch.long)
+
+                all_example_index = torch.arange(
+                    all_input_ids.size(0), dtype=torch.long)
+                eval_data = TensorDataset(
+                    all_input_ids, all_input_mask, all_segment_ids, all_task_ids, all_example_index)
+                # Run prediction for full data
+                eval_sampler = SequentialSampler(eval_data)
+                eval_loader = DataLoader(
+                    eval_data, sampler=eval_sampler, batch_size=args.predict_batch_size)
+
+                model.eval()
+                all_results = []
+                logger.info('Prediction on %s', task)
+                for input_ids, input_mask, segment_ids, task_ids, example_indices in tqdm(eval_loader, desc="Evaluating"):
+                    input_ids = input_ids.to(device)
+                    input_mask = input_mask.to(device)
+                    segment_ids = segment_ids.to(device)
+                    with torch.no_grad():
+                        batch_start_logits, batch_end_logits = model(
+                            input_ids, segment_ids, input_mask, task_id=task_ids[0])
+                    for i, example_index in enumerate(example_indices):
+                        start_logits = batch_start_logits[i].detach(
+                        ).cpu().tolist()
+                        end_logits = batch_end_logits[i].detach().cpu().tolist()
+                        eval_feature = eval_features[example_index.item()]
+                        unique_id = int(eval_feature.unique_id)
+                        all_results.append(RawResult(unique_id=unique_id,
+                                                     start_logits=start_logits,
+                                                     end_logits=end_logits))
+                output_prediction_file = os.path.join(
+                    output_dir, "%s_predictions.json.%s" % (task, epoch))
+                output_nbest_file = os.path.join(
+                    output_dir, "%s_nbest_predictions.json.%s" % (task,epoch))
+                output_null_log_odds_file = os.path.join(
+                    output_dir, "%s_null_odds.json.%s" % (task, epoch))
+                write_predictions(eval_examples, eval_features, all_results,
+                                  args.n_best_size, args.max_answer_length,
+                                  args.do_lower_case, output_prediction_file,
+                                  output_nbest_file, output_null_log_odds_file, args.verbose_logging,
+                                  args.version_2_with_negative, args.null_score_diff_threshold)
+
+
     output_model_file = os.path.join(output_dir, WEIGHTS_NAME)
     output_config_file = os.path.join(output_dir, CONFIG_NAME)
     if args.do_train:
@@ -1301,7 +1380,6 @@ def main():
     model.to(device)
 
     if args.do_predict:
-        eval_loaders = []
         for i, task in enumerate(task_names):
             eval_examples = processors[task](task).get_dev_examples(args.data_dir)
             eval_features = convert_examples_to_features(
@@ -1333,13 +1411,13 @@ def main():
                 all_input_ids, all_input_mask, all_segment_ids, all_task_ids, all_example_index)
             # Run prediction for full data
             eval_sampler = SequentialSampler(eval_data)
-            eval_loaders.append(DataLoader(
-                eval_data, sampler=eval_sampler, batch_size=args.predict_batch_size))
+            eval_loader = DataLoader(
+                eval_data, sampler=eval_sampler, batch_size=args.predict_batch_size)
 
             model.eval()
             all_results = []
             logger.info('Prediction on %s', task)
-            for input_ids, input_mask, segment_ids, task_ids, example_indices in tqdm(eval_loaders[i], desc="Evaluating"):
+            for input_ids, input_mask, segment_ids, task_ids, example_indices in tqdm(eval_loader, desc="Evaluating"):
                 input_ids = input_ids.to(device)
                 input_mask = input_mask.to(device)
                 segment_ids = segment_ids.to(device)
@@ -1366,6 +1444,7 @@ def main():
                               args.do_lower_case, output_prediction_file,
                               output_nbest_file, output_null_log_odds_file, args.verbose_logging,
                               args.version_2_with_negative, args.null_score_diff_threshold)
+
 
 
 if __name__ == "__main__":
