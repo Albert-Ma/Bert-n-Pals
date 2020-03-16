@@ -130,6 +130,15 @@ class MRQAProcessor:
 
     def __init__(self, name):
         """Init MRQA Reader."""
+        if name == 'duorc':
+            self.train_file_name = 'train_DuoRC.jsonl.gz'
+            self.dev_file_name = 'dev_DuoRC.jsonl.gz'
+        if name == 'narrativeqa':
+            self.train_file_name = 'train_NarrativeQA.jsonl.gz'
+            self.dev_file_name = 'dev_NarrativeQA.jsonl.gz'
+        if name == 'tweetqa':
+            self.train_file_name = 'train_TweetQA.jsonl.gz'
+            self.dev_file_name = 'dev_TweetQA.jsonl.gz'
         if name == 'newsqa':
             self.train_file_name = 'NewsQA.jsonl.gz'
             self.dev_file_name = 'dev_NewsQA.jsonl.gz'
@@ -988,18 +997,13 @@ def main():
     args = parser.parse_args()
     task_names = args.tasks.split(',')
     num_tasks = len(task_names)
-    if args.server_ip and args.server_port:
-        # Distant debugging - see https://code.visualstudio.com/docs/python/debugging#_attach-to-a-local-script
-        import ptvsd
-        print("Waiting for debugger attach")
-        ptvsd.enable_attach(
-            address=(args.server_ip, args.server_port), redirect_output=True)
-        ptvsd.wait_for_attach()
     if args.do_train:
-        output_dir = os.path.join(args.output_dir,
-                                  args.source + '_TO_' + '_'.join(task_names) + '_' +
-                                  os.path.basename(args.config_file).replace('.json', '') +
-                                  '_' + args.freeze_regex + '_' + uuid.uuid4().hex[:8])
+        #output_dir = os.path.join(args.output_dir,
+        #                          args.source + '_TO_' + '_'.join(task_names) + '_' +
+        #                          os.path.basename(args.config_file).replace('.json', '') +
+        #                          '_' + args.freeze_regex + '_' + uuid.uuid4().hex[:8])
+        # Serial experiments
+        output_dir = os.path.join(args.output_dir,'_'.join(task_names))
         os.makedirs(output_dir, exist_ok=True)
         tf_writer = SummaryWriter(os.path.join(output_dir, 'log'))
         json.dump(vars(args), open(os.path.join(
@@ -1017,13 +1021,15 @@ def main():
     file_handler = logging.FileHandler(log_file, 'w')
     logger.addHandler(file_handler)
 
-
     processors = {"squad": MRQAProcessor,
                   "newsqa": MRQAProcessor,
                   "triviaqa": MRQAProcessor,
                   "hotpotqa": MRQAProcessor,
                   "searchqa": MRQAProcessor,
                   "naturalqa": MRQAProcessor,
+                  "tweetqa": MRQAProcessor,
+                  "narrativeqa": MRQAProcessor,
+                  "duorc": MRQAProcessor,
                   }
 
     task_id_mappings = {
@@ -1033,6 +1039,9 @@ def main():
         'hotpotqa': 3,
         'searchqa': 4,
         'naturalqa': 5,
+        'tweetqa': 6,
+        'narrativeqa': 7,
+        'duorc': 8,
     }
     if args.gradient_accumulation_steps < 1:
         raise ValueError("Invalid gradient_accumulation_steps parameter: {}, should be >= 1".format(
@@ -1052,7 +1061,6 @@ def main():
 
     tokenizer = FullTokenizer(
         args.vocab_file, do_lower_case=args.do_lower_case)
-
 
     train_examples = None
     num_train_optimization_steps = None
@@ -1103,6 +1111,16 @@ def main():
             else:
                 tuned += p.numel()
 
+    if args.freeze_regex == 'adapter':
+        logger.info('Tune all bias parameters!')
+        for n, p in model.bert.named_parameters():
+            if "adapter" not in n:
+                p.requires_grad = False
+                non_tuned += p.numel()
+            else:
+                tuned += p.numel()
+
+
     if args.freeze_regex == 'attention_bias':
         logger.info('Tune all attetnion bias parameters!')
         for n, p in model.bert.named_parameters():
@@ -1140,7 +1158,7 @@ def main():
                 non_tuned += p.numel()
 
 
-    for n, p in model.bert.named_parameters():
+    for n, p in model.named_parameters():
         logger.info('{}\t{}'.format(p.requires_grad, n))
     logger.info('tuned:{}({}), not tuned: {}'.format(
         tuned, round(tuned / total, 6), non_tuned))
@@ -1347,7 +1365,7 @@ def main():
                 output_prediction_file = os.path.join(
                     output_dir, "%s_predictions.json.%s" % (task, epoch))
                 output_nbest_file = os.path.join(
-                    output_dir, "%s_nbest_predictions.json.%s" % (task,epoch))
+                    output_dir, "%s_nbest_predictions.json.%s" % (task, epoch))
                 output_null_log_odds_file = os.path.join(
                     output_dir, "%s_null_odds.json.%s" % (task, epoch))
                 write_predictions(eval_examples, eval_features, all_results,
