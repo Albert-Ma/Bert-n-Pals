@@ -714,7 +714,7 @@ class BertForQuestionAnswering(nn.Module):
                 module.bias.data.zero_()
         self.apply(init_weights)
 
-    def forward(self, input_ids, token_type_ids, attention_mask, task_id=None, start_positions=None, end_positions=None):
+    def forward(self, input_ids, token_type_ids, attention_mask, task_id=None, start_positions=None, end_positions=None, weight=20, reg=False):
         all_encoder_layers, _ = self.bert(input_ids, token_type_ids, attention_mask, task_id)
         sequence_output = all_encoder_layers[-1]
         logits = self.qa_outputs(sequence_output)
@@ -735,33 +735,56 @@ class BertForQuestionAnswering(nn.Module):
             loss_fct = CrossEntropyLoss(ignore_index=ignored_index)
             start_loss = loss_fct(start_logits, start_positions)
             end_loss = loss_fct(end_logits, end_positions)
-            total_loss = (start_loss + end_loss) / 2
-            return total_loss
+            ce_loss = (start_loss + end_loss) / 2
+            # calculate l2 loss or ewc loss.
+            #print('ce:', ce_loss.item())
+            if reg:
+                l2_loss = self.l2_loss()
+                #print('l2:', l2_loss.item())
+                total_loss = l2_loss * weight + ce_loss
+                return total_loss
+            else:
+                return ce_loss
         else:
             return start_logits, end_logits
 
+    def l2_loss(self):
+        losses = []
+        for n, p in self.named_parameters():
+            mean = getattr(self, f"{n.replace('.', '_')}__mean")
+            losses.append(((p-mean)**2).sum())
+        return sum(losses)
+
     def load_pretrained(self, init_checkpoint, patch=False, transfer=False):
-        if patch:
-            partial = torch.load(init_checkpoint, map_location='cpu')
-            model_dict = self.bert.state_dict()
-            update = {}
-            for n, p in model_dict.items():
-                if 'aug' in n or 'mult' in n:
-                    update[n] = p
-                    if 'pooler.mult' in n and 'bias' in n:
-                        update[n] = partial['pooler.dense.bias']
-                    if 'pooler.mult' in n and 'weight' in n:
-                        update[n] = partial['pooler.dense.weight']
-                else:
-                    update[n] = partial[n]
-            self.bert.load_state_dict(update)
+        #if patdch:
+        #    partial = torch.load(init_checkpoint, map_location='cpu')
+        #    model_dict = self.bert.state_dict()
+        #    update = {}
+        #    for n, p in model_dict.items():
+        #        if 'aug' in n or 'mult' in n:
+        #            update[n] = p
+        #            if 'pooler.mult' in n and 'bias' in n:
+        #                update[n] = partial['pooler.dense.bias']
+        #            if 'pooler.mult' in n and 'weight' in n:
+        #                update[n] = partial['pooler.dense.weight']
+        #        else:
+        #            update[n] = partial[n]
+        #    self.bert.load_state_dict(update)
         if transfer:
             print('Load all parameters')
             missing_keys, unexpected_keys = self.load_state_dict(torch.load(init_checkpoint, map_location='cpu'),strict=False)
             print("missing keys: {}".format(missing_keys))
             print('unexpected keys: {}'.format(unexpected_keys))
+            # register paramerters.
+
         else:
             print('Load Bert parameters')
             missing_keys, unexpected_keys = self.bert.load_state_dict(torch.load(init_checkpoint, map_location='cpu'),strict=False)
             print("missing keys: {}".format(missing_keys))
             print('unexpected keys: {}'.format(unexpected_keys))
+
+    def register_parameters(self, init_checkpoint):
+        params = torch.load(init_checkpoint, map_location='cpu')
+        for k,v in params.items():
+            if 'mean' not in k:
+                self.register_buffer(f"{k.replace('.', '_')}__mean", v)

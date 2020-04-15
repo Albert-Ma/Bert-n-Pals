@@ -157,6 +157,31 @@ class MRQAProcessor:
         if name == 'squad':
             self.train_file_name = 'SQuAD.jsonl.gz'
             self.dev_file_name = 'dev_SQuAD.jsonl.gz'
+        if name == 'what':
+            self.train_file_name = 'what_train.gz'
+            self.dev_file_name = 'what_dev.gz'
+        if name == 'how':
+            self.train_file_name = 'how_train.gz'
+            self.dev_file_name = 'how_dev.gz'
+        if name == 'when':
+            self.train_file_name = 'when_train.gz'
+            self.dev_file_name = 'when_dev.gz'
+        if name == 'where':
+            self.train_file_name = 'where_train.gz'
+            self.dev_file_name = 'where_dev.gz'
+        if name == 'which':
+            self.train_file_name = 'which_train.gz'
+            self.dev_file_name = 'which_dev.gz'
+        if name == 'why':
+            self.train_file_name = 'why_train.gz'
+            self.dev_file_name = 'why_dev.gz'
+        if name == 'other':
+            self.train_file_name = 'other_train.gz'
+            self.dev_file_name = 'other_dev.gz'
+        if name == 'who':
+            self.train_file_name = 'who_train.gz'
+            self.dev_file_name = 'who_dev.gz'
+
 
     def get_train_examples(self, data_dir, topk=10000000):
         """Load train."""
@@ -172,7 +197,9 @@ class MRQAProcessor:
         """Read a MRQA json file into a list of MRQAExample."""
         with gzip.GzipFile(input_file, 'r') as reader:
             # skip header
-            content = reader.read().decode('utf-8').strip().split('\n')[1:]
+            content = reader.read().decode('utf-8').strip().split('\n')
+            if 'context' not in content[0]:
+                content = content[1:]
             input_data = [json.loads(line) for line in content]
 
         def is_whitespace(c):
@@ -899,6 +926,18 @@ def main():
     """Main."""
     parser = argparse.ArgumentParser()
 
+    parser.add_argument("--reg",
+                        default=False,
+                        action='store_true',
+                        help="Whether apply l2 loss")
+    parser.add_argument("--ewc",
+                        default=False,
+                        action='store_true',
+                        help="Whether apply ewc loss")
+    parser.add_argument("--weight",
+                        type=float,
+                        default=20,
+                        help="Coefficient for reg/ewc loss")
     parser.add_argument("--tasks",
                         default="all",
                         type=str,
@@ -946,9 +985,9 @@ def main():
                         help="Whether to run training.")
     parser.add_argument("--do_predict", action='store_true',
                         help="Whether to run eval on the dev set.")
-    parser.add_argument("--train_batch_size", default=16,
+    parser.add_argument("--train_batch_size", default=8,
                         type=int, help="Total batch size for training.")
-    parser.add_argument("--predict_batch_size", default=24,
+    parser.add_argument("--predict_batch_size", default=8,
                         type=int, help="Total batch size for predictions.")
     parser.add_argument("--learning_rate", default=5e-5,
                         type=float, help="The initial learning rate for Adam.")
@@ -1030,6 +1069,14 @@ def main():
                   "tweetqa": MRQAProcessor,
                   "narrativeqa": MRQAProcessor,
                   "duorc": MRQAProcessor,
+                  'what': MRQAProcessor,
+                  "when": MRQAProcessor,
+                  "which": MRQAProcessor,
+                  "who": MRQAProcessor,
+                  "where": MRQAProcessor,
+                  "how": MRQAProcessor,
+                  "why": MRQAProcessor,
+                  "other": MRQAProcessor,
                   }
 
     task_id_mappings = {
@@ -1042,6 +1089,14 @@ def main():
         'tweetqa': 6,
         'narrativeqa': 7,
         'duorc': 8,
+        'what': 9,
+        'where': 10,
+        'when': 11,
+        'who': 12,
+        'which': 13,
+        'how': 14,
+        'why': 15,
+        'other': 16
     }
     if args.gradient_accumulation_steps < 1:
         raise ValueError("Invalid gradient_accumulation_steps parameter: {}, should be >= 1".format(
@@ -1072,6 +1127,8 @@ def main():
     model = BertForQuestionAnswering(config)
 
     model.load_pretrained(args.init_checkpoint, patch=args.patch, transfer=args.transfer)
+    if args.reg:
+        model.register_parameters(args.init_checkpoint)
     tuned, non_tuned, total = 0, 0, 0
     for n, p in model.bert.named_parameters():
         total += p.numel()
@@ -1112,7 +1169,7 @@ def main():
                 tuned += p.numel()
 
     if args.freeze_regex == 'adapter':
-        logger.info('Tune all bias parameters!')
+        logger.info('Tune adapter parameters!')
         for n, p in model.bert.named_parameters():
             if "adapter" not in n:
                 p.requires_grad = False
@@ -1209,7 +1266,6 @@ def main():
                     "  Saving train features into cached file %s", cached_train_features_file)
                 with open(cached_train_features_file, "wb") as writer:
                     pickle.dump(train_features, writer)
-            train_features = train_features[:args.topk]
             logger.info("***** Running training *****")
             logger.info("  task name = %s" % task)
             logger.info("  Num orig examples = %d", len(train_examples))
@@ -1279,7 +1335,7 @@ def main():
                 batch = tuple(t.to(device) for t in batch)
                 input_ids, input_mask, segment_ids, task_id, start_positions, end_positions = batch
                 loss = model(input_ids, segment_ids, input_mask, task_id=task_id[0],
-                             start_positions=start_positions, end_positions=end_positions)
+                             start_positions=start_positions, end_positions=end_positions, weight=args.weight, reg=args.reg)
                 if n_gpu > 1:
                     loss = loss.mean()  # mean() to average on multi-gpu.
                 if args.gradient_accumulation_steps > 1:
@@ -1333,7 +1389,6 @@ def main():
                     [f.segment_ids for f in eval_features], dtype=torch.long)
                 all_task_ids = torch.tensor(
                     [task_id_mappings[task] for f in eval_features], dtype=torch.long)
-
                 all_example_index = torch.arange(
                     all_input_ids.size(0), dtype=torch.long)
                 eval_data = TensorDataset(
@@ -1382,6 +1437,7 @@ def main():
         model_to_save = model.module if hasattr(
             model, 'module') else model  # Only save the model it-self
         # If we save using the predefined names, we can load using `from_pretrained`
+        # estimate fisher
         torch.save(model_to_save.state_dict(), output_model_file)
         config.to_json_file(output_config_file)
 
@@ -1393,8 +1449,8 @@ def main():
     config = BertConfig.from_json_file(output_config_file)
     model = BertForQuestionAnswering(config)
     # 加载全部参数
-    model.load_state_dict(torch.load(output_model_file))
-
+    missing_keys, unexpected_keys = model.load_state_dict(torch.load(output_model_file), strict=False)
+    print(f'unexpected_keys:{unexpected_keys}')
     model.to(device)
 
     if args.do_predict:
@@ -1462,7 +1518,6 @@ def main():
                               args.do_lower_case, output_prediction_file,
                               output_nbest_file, output_null_log_odds_file, args.verbose_logging,
                               args.version_2_with_negative, args.null_score_diff_threshold)
-
 
 
 if __name__ == "__main__":
